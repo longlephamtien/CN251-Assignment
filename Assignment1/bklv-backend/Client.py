@@ -1,8 +1,10 @@
 import socket
 import threading
 import json
+import shutil
 import sys
 import os
+import shlex
 import time
 import argparse
 
@@ -100,27 +102,78 @@ class Client:
                 print("Heartbeat failed:", e)
                 break
 
+    # def publish(self, local_path, fname):
+    #     if not os.path.isfile(local_path):
+    #         print("local file not found")
+    #         return
+    #     dest = os.path.join(self.repo_dir, fname)
+    #     if local_path != dest:
+    #         try:
+    #             with open(local_path,'rb') as fr, open(dest,'wb') as fw:
+    #                 fw.write(fr.read())
+    #         except Exception as e:
+    #             print("copy error", e)
+    #             return
+    #
+    #     self.local_files.add(fname)
+    #     with self.central_lock:
+    #         send_json(self.central, {"action":"PUBLISH","data":{"hostname":self.hostname,"fname":fname}})
+    #         r = recv_json(self.central)
+    #     if r and r.get('status') == 'ACK':
+    #         print("Published", fname)
+    #     else:
+    #         print("Publish failed", r)
 
     def publish(self, local_path, fname):
-        if not os.path.isfile(local_path):
-            print("local file not found")
-            return
-        dest = os.path.join(self.repo_dir, fname)
-        if local_path != dest:
-            try:
-                with open(local_path,'rb') as fr, open(dest,'wb') as fw:
-                    fw.write(fr.read())
-            except Exception as e:
-                print("copy error", e)
+        """Publish a file from anywhere into the local repo and notify the central server."""
+        try:
+            # Normalize path (expand ~ and make absolute)
+            local_path = os.path.expanduser(local_path)
+            local_path = os.path.abspath(local_path)
+
+            # Check if file exists
+            if not os.path.isfile(local_path):
+                print(f"[ERROR] Local file not found: {local_path}")
                 return
-        self.local_files.add(fname)
-        with self.central_lock:
-            send_json(self.central, {"action":"PUBLISH","data":{"hostname":self.hostname,"fname":fname}})
-            r = recv_json(self.central)
-        if r and r.get('status') == 'ACK':
-            print("Published", fname)
-        else:
-            print("Publish failed", r)
+
+            # Ensure repo directory exists
+            os.makedirs(self.repo_dir, exist_ok=True)
+            dest = os.path.join(self.repo_dir, fname)
+
+            # Warn before overwriting
+            if os.path.exists(dest):
+                print(f"[WARNING] A file named '{fname}' already exists in repo.")
+                choice = input("Overwrite it? (y/n): ").strip().lower()
+                if choice != 'y':
+                    print("[INFO] Publish cancelled.")
+                    return
+
+            # Copy file safely into repository
+            try:
+                shutil.copy2(local_path, dest)
+                print(f"[INFO] Copied '{local_path}' → '{dest}'")
+            except Exception as e:
+                print(f"[ERROR] Failed to copy file: {e}")
+                return
+
+            # Update local tracking
+            self.local_files.add(fname)
+
+            # Notify central server
+            with self.central_lock:
+                send_json(self.central, {
+                    "action": "PUBLISH",
+                    "data": {"hostname": self.hostname, "fname": fname}
+                })
+                r = recv_json(self.central)
+
+            if r and r.get('status') == 'ACK':
+                print(f"[SUCCESS] Published '{fname}' to network.")
+            else:
+                print(f"[ERROR] Publish failed: {r}")
+
+        except Exception as e:
+            print(f"[ERROR] Exception during publish: {e}")
 
     def request(self, fname):
         with self.central_lock:
@@ -216,28 +269,46 @@ def cli_loop(client):
             line = input(prompt).strip()
             if not line:
                 continue
-            parts = line.split()
+
+            # --- Use shlex to properly handle quoted paths ---
+            try:
+                parts = shlex.split(line)
+            except ValueError as e:
+                print(f"[ERROR] Invalid command syntax: {e}")
+                continue
+
             cmd = parts[0].lower()
+
             if cmd == 'publish' and len(parts) == 3:
                 client.publish(parts[1], parts[2])
+
             elif cmd == 'fetch' and len(parts) == 2:
                 client.request(parts[1])
+
             elif cmd == 'discover' and len(parts) == 2:
                 client.discover(parts[1])
+
             elif cmd == 'ping' and len(parts) == 2:
                 client.ping(parts[1])
+
             elif cmd == 'list':
                 client.list_local()
+
             elif cmd == 'registry':
                 client.list_registry()
+
             elif cmd == 'exit':
                 client.unregister()
                 print("bye")
                 return
+
             else:
                 print("commands: publish <localpath> <name> | fetch <name> | discover <host> | ping <host> | list | registry | exit")
+
     except KeyboardInterrupt:
+        print("\n[INFO] Keyboard interrupt received. Exiting client...")
         client.unregister()
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
