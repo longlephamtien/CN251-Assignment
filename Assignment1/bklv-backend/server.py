@@ -3,7 +3,12 @@ import threading
 import json
 import time
 from datetime import datetime
-from config import SERVER_HOST, SERVER_PORT
+from config import (
+    SERVER_HOST, 
+    SERVER_PORT,
+    CLIENT_CLEANUP_INTERVAL,
+    CLIENT_INACTIVE_TIMEOUT
+)
 
 HOST = SERVER_HOST if SERVER_HOST != '127.0.0.1' else ''
 PORT = SERVER_PORT
@@ -206,13 +211,14 @@ def handle_conn(conn, addr):
         conn.close()
 
 def cleanup_thread():
+    """Remove inactive clients based on configured timeout"""
     while True:
-        time.sleep(30)
+        time.sleep(CLIENT_CLEANUP_INTERVAL)
         now = time.time()
         with registry_lock:
-            to_remove = [h for h, info in registry.items() if now - info["last_seen"] > 120]
+            to_remove = [h for h, info in registry.items() if now - info["last_seen"] > CLIENT_INACTIVE_TIMEOUT]
             for h in to_remove:
-                print(f"[CLEANUP] Removing inactive host {h}")
+                print(f"[CLEANUP] Removing inactive host {h} (timeout: {CLIENT_INACTIVE_TIMEOUT}s)")
                 registry.pop(h, None)
 
 def main():

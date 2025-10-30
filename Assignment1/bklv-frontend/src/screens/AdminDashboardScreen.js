@@ -65,7 +65,11 @@ function AdminDashboardScreen({ onBack }) {
   // Fetch registry data
   const fetchData = async () => {
     try {
-      const response = await fetch(`${API_BASE}/admin/registry`);
+      const response = await fetch(`${API_BASE}/admin/registry`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       const data = await response.json();
       
       if (data.success) {
@@ -90,7 +94,11 @@ function AdminDashboardScreen({ onBack }) {
   // Handle ping
   const handlePing = async (hostname) => {
     try {
-      const response = await fetch(`${API_BASE}/admin/ping/${hostname}`);
+      const response = await fetch(`${API_BASE}/admin/ping/${hostname}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       const data = await response.json();
       showNotification('info', 'Ping Result', `${hostname}: ${data.status}`);
     } catch (error) {
@@ -101,7 +109,11 @@ function AdminDashboardScreen({ onBack }) {
   // Handle discover
   const handleDiscover = async (hostname) => {
     try {
-      const response = await fetch(`${API_BASE}/admin/discover/${hostname}`);
+      const response = await fetch(`${API_BASE}/admin/discover/${hostname}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       const data = await response.json();
       
       if (data.success) {

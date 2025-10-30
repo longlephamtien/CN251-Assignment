@@ -68,6 +68,11 @@ function ClientInterfaceScreen({ onBack }) {
     customPath: ''
   });
 
+  // Duplicate detection states
+  const [uploadDuplicateInfo, setUploadDuplicateInfo] = useState(null);
+  const [uploadLocalDuplicateInfo, setUploadLocalDuplicateInfo] = useState(null);
+  const [fetchLocalDuplicateInfo, setFetchLocalDuplicateInfo] = useState(null);
+
   // Handle authentication
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -93,7 +98,8 @@ function ClientInterfaceScreen({ onBack }) {
         setAuthenticated(true);
         setShowAuthModal(false);
         showNotification('success', 'Success', `${authMode === 'login' ? 'Logged in' : 'Registered'} successfully!`);
-        await initializeClient(data.user.username);
+        // Pass token explicitly to avoid race condition
+        await initializeClient(data.user.username, data.token);
       } else {
         showNotification('error', 'Authentication Failed', data.error);
       }
@@ -105,7 +111,7 @@ function ClientInterfaceScreen({ onBack }) {
   };
 
   // Initialize client session
-  const initializeClient = async (username) => {
+  const initializeClient = async (username, userToken) => {
     try {
       const response = await fetch(`${CLIENT_API_BASE}/init`, {
         method: 'POST',
@@ -122,7 +128,8 @@ function ClientInterfaceScreen({ onBack }) {
       if (data.success) {
         setClientInfo(data.client);
         setInitialized(true);
-        fetchAllData();
+        // Pass token explicitly to fetchAllData
+        fetchAllData(userToken);
         showNotification('success', 'Connected', `Connected to P2P network as ${data.client.display_name}`);
       } else {
         showNotification('error', 'Initialization Failed', data.error);
@@ -133,17 +140,24 @@ function ClientInterfaceScreen({ onBack }) {
   };
 
   // Fetch all data
-  const fetchAllData = async () => {
+  const fetchAllData = async (userToken) => {
+    // Use provided token or fall back to state token
+    const authToken = userToken || token;
     await Promise.all([
-      fetchLocalFiles(),
-      fetchPublishedFiles(),
-      fetchNetworkFiles()
+      fetchLocalFiles(authToken),
+      fetchPublishedFiles(authToken),
+      fetchNetworkFiles(authToken)
     ]);
   };
 
-  const fetchLocalFiles = async () => {
+  const fetchLocalFiles = async (authToken) => {
+    const useToken = authToken || token;
     try {
-      const response = await fetch(`${CLIENT_API_BASE}/local-files`);
+      const response = await fetch(`${CLIENT_API_BASE}/local-files`, {
+        headers: {
+          'Authorization': `Bearer ${useToken}`
+        }
+      });
       const data = await response.json();
       if (data.success) {
         setLocalFiles(data.files);
@@ -153,9 +167,14 @@ function ClientInterfaceScreen({ onBack }) {
     }
   };
 
-  const fetchPublishedFiles = async () => {
+  const fetchPublishedFiles = async (authToken) => {
+    const useToken = authToken || token;
     try {
-      const response = await fetch(`${CLIENT_API_BASE}/published-files`);
+      const response = await fetch(`${CLIENT_API_BASE}/published-files`, {
+        headers: {
+          'Authorization': `Bearer ${useToken}`
+        }
+      });
       const data = await response.json();
       if (data.success) {
         setPublishedFiles(data.files);
@@ -165,9 +184,14 @@ function ClientInterfaceScreen({ onBack }) {
     }
   };
 
-  const fetchNetworkFiles = async () => {
+  const fetchNetworkFiles = async (authToken) => {
+    const useToken = authToken || token;
     try {
-      const response = await fetch(`${CLIENT_API_BASE}/network-files`);
+      const response = await fetch(`${CLIENT_API_BASE}/network-files`, {
+        headers: {
+          'Authorization': `Bearer ${useToken}`
+        }
+      });
       const data = await response.json();
       if (data.success) {
         setNetworkFiles(data.files);
@@ -186,13 +210,80 @@ function ClientInterfaceScreen({ onBack }) {
   }, [initialized]);
 
   // Handle file selection
-  const handleFileSelect = (e) => {
+  const handleFileSelect = async (e) => {
     const file = e.target.files[0];
     if (file) {
       setUploadForm({
         ...uploadForm,
         selectedFile: file
       });
+      
+      // Check for duplicates when file is selected
+      await checkUploadDuplicates(file);
+    }
+  };
+
+  // Check for duplicates on network and locally
+  const checkUploadDuplicates = async (file) => {
+    try {
+      // Check network duplicates
+      const networkResponse = await fetch(`${CLIENT_API_BASE}/check-duplicate`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          fname: file.name,
+          size: file.size,
+          modified: Math.floor(file.lastModified / 1000) // Convert to seconds
+        })
+      });
+      
+      const networkData = await networkResponse.json();
+      if (networkData.success) {
+        setUploadDuplicateInfo(networkData);
+      }
+      
+      // Check local duplicates
+      const localResponse = await fetch(`${CLIENT_API_BASE}/check-local-duplicate`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          fname: file.name
+        })
+      });
+      
+      const localData = await localResponse.json();
+      if (localData.success) {
+        setUploadLocalDuplicateInfo(localData);
+      }
+    } catch (error) {
+      console.error('Failed to check duplicates:', error);
+    }
+  };
+
+  // Check for local duplicates when fetching a file
+  const checkFetchDuplicates = async (fname) => {
+    try {
+      const response = await fetch(`${CLIENT_API_BASE}/check-local-duplicate`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ fname })
+      });
+      
+      const data = await response.json();
+      if (data.success) {
+        setFetchLocalDuplicateInfo(data);
+      }
+    } catch (error) {
+      console.error('Failed to check local duplicates:', error);
     }
   };
 
@@ -209,11 +300,15 @@ function ClientInterfaceScreen({ onBack }) {
       const formData = new FormData();
       formData.append('file', uploadForm.selectedFile);
       formData.append('auto_publish', uploadForm.autoPublish);
+      formData.append('force_upload', 'true'); // Allow overwriting if user confirmed
       
       showNotification('info', 'Uploading', `Uploading ${uploadForm.selectedFile.name}...`);
       
       const response = await fetch(`${CLIENT_API_BASE}/upload`, {
         method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
         body: formData
       });
       
@@ -223,6 +318,8 @@ function ClientInterfaceScreen({ onBack }) {
         showNotification('success', 'Success', data.message);
         setShowPublishModal(false);
         setUploadForm({ selectedFile: null, autoPublish: false });
+        setUploadDuplicateInfo(null);
+        setUploadLocalDuplicateInfo(null);
         setTimeout(() => {
           fetchAllData();
         }, 1000);
@@ -241,7 +338,10 @@ function ClientInterfaceScreen({ onBack }) {
       
       const response = await fetch(`${CLIENT_API_BASE}/publish`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({
           fname: file.name
         })
@@ -268,7 +368,10 @@ function ClientInterfaceScreen({ onBack }) {
     try {
       const response = await fetch(`${CLIENT_API_BASE}/unpublish`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ fname })
       });
       
@@ -289,9 +392,13 @@ function ClientInterfaceScreen({ onBack }) {
   };
 
   // Fetch file from network
-  const handleFetchFile = (file) => {
+  const handleFetchFile = async (file) => {
     setSelectedNetworkFile(file);
     setFetchForm({ fetchToBackend: true, customPath: '' });
+    
+    // Check for local duplicates before showing modal
+    await checkFetchDuplicates(file.name);
+    
     setShowFetchModal(true);
   };
 
@@ -304,7 +411,10 @@ function ClientInterfaceScreen({ onBack }) {
         
         const response = await fetch(`${CLIENT_API_BASE}/fetch`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
           body: JSON.stringify({
             fname: selectedNetworkFile.name,
             save_path: fetchForm.customPath || null
@@ -327,7 +437,10 @@ function ClientInterfaceScreen({ onBack }) {
         
         const fetchResponse = await fetch(`${CLIENT_API_BASE}/fetch`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
           body: JSON.stringify({
             fname: selectedNetworkFile.name,
             save_path: null
@@ -338,15 +451,28 @@ function ClientInterfaceScreen({ onBack }) {
         
         if (fetchData.success) {
           setTimeout(async () => {
-            const downloadUrl = `${CLIENT_API_BASE}/download/${encodeURIComponent(selectedNetworkFile.name)}`;
-            const link = document.createElement('a');
-            link.href = downloadUrl;
-            link.download = selectedNetworkFile.name;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
+            // Download file with authentication
+            const downloadResponse = await fetch(`${CLIENT_API_BASE}/download/${encodeURIComponent(selectedNetworkFile.name)}`, {
+              headers: {
+                'Authorization': `Bearer ${token}`
+              }
+            });
             
-            showNotification('success', 'Download Started', 'File download started to your browser');
+            if (downloadResponse.ok) {
+              const blob = await downloadResponse.blob();
+              const url = window.URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.href = url;
+              link.download = selectedNetworkFile.name;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              window.URL.revokeObjectURL(url);
+              
+              showNotification('success', 'Download Started', 'File download started to your browser');
+            } else {
+              showNotification('error', 'Download Failed', 'Failed to download file');
+            }
             setShowFetchModal(false);
           }, 2000);
         } else {
@@ -507,8 +633,14 @@ function ClientInterfaceScreen({ onBack }) {
           setUploadForm={setUploadForm}
           onSubmit={handleUploadFile}
           onFileSelect={handleFileSelect}
-          onClose={() => setShowPublishModal(false)}
+          onClose={() => {
+            setShowPublishModal(false);
+            setUploadDuplicateInfo(null);
+            setUploadLocalDuplicateInfo(null);
+          }}
           formatFileSize={formatFileSize}
+          duplicateInfo={uploadDuplicateInfo}
+          localDuplicateInfo={uploadLocalDuplicateInfo}
         />
       )}
 
@@ -519,8 +651,12 @@ function ClientInterfaceScreen({ onBack }) {
           fetchForm={fetchForm}
           setFetchForm={setFetchForm}
           onSubmit={handleFetchConfirm}
-          onClose={() => setShowFetchModal(false)}
+          onClose={() => {
+            setShowFetchModal(false);
+            setFetchLocalDuplicateInfo(null);
+          }}
           formatFileSize={formatFileSize}
+          localDuplicateInfo={fetchLocalDuplicateInfo}
         />
       )}
 

@@ -9,13 +9,26 @@ import time
 import argparse
 from datetime import datetime
 
+# Import adaptive heartbeat
 try:
-    from config import SERVER_HOST, SERVER_PORT
+    from optimizations.adaptive_heartbeat import AdaptiveHeartbeat, ClientState
+    ADAPTIVE_HEARTBEAT_AVAILABLE = True
+except ImportError:
+    print("[WARN] Adaptive heartbeat module not found, using fixed interval")
+    ADAPTIVE_HEARTBEAT_AVAILABLE = False
+
+try:
+    from config import (
+        SERVER_HOST, 
+        SERVER_PORT,
+        CLIENT_HEARTBEAT_INTERVAL
+    )
     CENTRAL_HOST = SERVER_HOST
     CENTRAL_PORT = SERVER_PORT
 except:
     CENTRAL_HOST = '127.0.0.1'
     CENTRAL_PORT = 9000
+    CLIENT_HEARTBEAT_INTERVAL = 60
 
 class FileMetadata:
     """Tracks file metadata for local, published, and network files"""
@@ -36,6 +49,24 @@ class FileMetadata:
             'is_published': self.is_published,
             'published_at': self.published_at
         }
+    
+    def matches_metadata(self, other_size, other_modified, tolerance_seconds=2):
+        """
+        Check if file metadata matches (for duplicate detection without hashing)
+        
+        Args:
+            other_size: Size to compare
+            other_modified: Modified time to compare
+            tolerance_seconds: Tolerance for time comparison (default 2 seconds)
+        
+        Returns:
+            Tuple (exact_match, size_match, time_match)
+        """
+        size_match = self.size == other_size
+        time_match = abs(self.modified - other_modified) < tolerance_seconds
+        exact_match = size_match and time_match
+        
+        return exact_match, size_match, time_match
 
 def send_json(conn, obj):
     data = json.dumps(obj) + '\n'
@@ -116,6 +147,14 @@ class Client:
         # Control flag for threads
         self.running = True
         
+        # Initialize adaptive heartbeat if available
+        if ADAPTIVE_HEARTBEAT_AVAILABLE:
+            self.adaptive_heartbeat = AdaptiveHeartbeat(ClientState.ACTIVE)
+            print("[INFO] Adaptive heartbeat enabled")
+        else:
+            self.adaptive_heartbeat = None
+            print("[INFO] Using fixed heartbeat interval")
+        
         # IMPORTANT: Scan repo directory FIRST to get current files
         self._scan_repo_directory()
         
@@ -149,8 +188,9 @@ class Client:
         })
         resp = recv_json(self.central)
         if not resp or resp.get('status') != 'OK':
-            print("Register failed", resp)
-            sys.exit(1)
+            error_msg = f"Register failed: {resp}"
+            print(f"[ERROR] {error_msg}")
+            raise RuntimeError(error_msg)
         
         self.pub_lock = threading.Lock()
         self.peer_server = PeerServer(self.listen_port, self.repo_dir)
@@ -243,17 +283,37 @@ class Client:
         return True
     
     def heartbeat_thread(self):
+        """Send periodic heartbeat to central server with adaptive intervals"""
         while self.running:
             try:
-                time.sleep(60)
+                # Get interval (adaptive or fixed)
+                if self.adaptive_heartbeat:
+                    interval = self.adaptive_heartbeat.get_interval()
+                else:
+                    interval = CLIENT_HEARTBEAT_INTERVAL
+                
+                time.sleep(interval)
+                
                 if not self.running:
                     break
+                
                 with self.central_lock:
-                    send_json(self.central, {"action": "PING", "data": {"hostname": self.hostname}})
+                    ping_data = {"hostname": self.hostname}
+                    
+                    # Include state if using adaptive heartbeat
+                    if self.adaptive_heartbeat:
+                        ping_data["state"] = self.adaptive_heartbeat.state.value
+                    
+                    send_json(self.central, {"action": "PING", "data": ping_data})
                     recv_json(self.central)
+                    
+                    # Record heartbeat
+                    if self.adaptive_heartbeat:
+                        self.adaptive_heartbeat.record_heartbeat()
+                        
             except Exception as e:
                 if self.running:  # Only log if we're supposed to be running
-                    print("Heartbeat failed:", e)
+                    print(f"[HEARTBEAT] Failed: {e}")
                 break
 
     # def publish(self, local_path, fname):
@@ -279,7 +339,9 @@ class Client:
     #         print("Publish failed", r)
 
     def publish(self, local_path, fname, overwrite=True, interactive=True):
-        """Publish a file from anywhere into the local repo and notify the central server.
+        """
+        Publish a file from anywhere into the local repo and notify the central server.
+        Includes duplicate detection based on metadata (size + modified time).
         
         Args:
             local_path: Path to the local file
@@ -288,6 +350,10 @@ class Client:
             interactive: If True, prompt user for confirmation (default: True, CLI mode)
         """
         try:
+            # Mark activity for adaptive heartbeat
+            if self.adaptive_heartbeat:
+                self.adaptive_heartbeat.mark_activity("publish")
+            
             # Normalize path (expand ~ and make absolute)
             local_path = os.path.expanduser(local_path)
             local_path = os.path.abspath(local_path)
@@ -297,10 +363,51 @@ class Client:
                 print(f"[ERROR] Local file not found: {local_path}")
                 return False
 
+            # Get file metadata before copying
+            source_stat = os.stat(local_path)
+            file_size = source_stat.st_size
+            file_modified = source_stat.st_mtime
+
+            # Check for duplicates on network based on metadata
+            duplicate_info = self._check_duplicate_on_network(fname, file_size, file_modified)
+            
+            if duplicate_info['has_exact_duplicate']:
+                # Exact duplicate found (same name, size, and modified time)
+                hosts = duplicate_info['exact_matches']
+                print(f"\n[WARNING] File '{fname}' with exact same size and modified time already exists on network!")
+                print(f"   Size: {file_size} bytes")
+                print(f"   Modified: {datetime.fromtimestamp(file_modified).strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"   Available from: {', '.join(h['hostname'] for h in hosts)}")
+                
+                if interactive:
+                    print("\n[RECOMMENDATION] File appears to be identical. Consider fetching instead of publishing.")
+                    choice = input("Do you still want to publish? (y/n): ").strip().lower()
+                    if choice != 'y':
+                        print("[INFO] Publish cancelled.")
+                        return False
+                else:
+                    # In non-interactive mode, block exact duplicates
+                    print("[ERROR] Exact duplicate exists. Publish blocked to save storage.")
+                    return False
+            
+            elif duplicate_info['has_partial_duplicate']:
+                # Partial duplicate (same name, but different size or time)
+                print(f"\n[WARNING] File '{fname}' with different metadata already exists on network!")
+                print(f"   Your file - Size: {file_size} bytes, Modified: {datetime.fromtimestamp(file_modified).strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                for match in duplicate_info['partial_matches']:
+                    print(f"   {match['hostname']} - Size: {match['size']} bytes, Modified: {datetime.fromtimestamp(match['modified']).strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                if interactive:
+                    choice = input("Files have same name but different content. Continue? (y/n): ").strip().lower()
+                    if choice != 'y':
+                        print("[INFO] Publish cancelled.")
+                        return False
+
             # Ensure repo directory exists
             os.makedirs(self.repo_dir, exist_ok=True)
             dest = os.path.join(self.repo_dir, fname)
-            dest = os.path.abspath(dest)  # Normalize destination path too
+            dest = os.path.abspath(dest)
 
             # Check if source and destination are the same file
             same_file = False
@@ -308,35 +415,34 @@ class Client:
                 try:
                     same_file = os.path.samefile(local_path, dest)
                 except (OSError, ValueError):
-                    # Fallback to string comparison if samefile fails
                     same_file = (local_path == dest)
             
             if same_file:
-                # File is already in the correct location, just update metadata and publish
                 print(f"[INFO] File '{fname}' already in repository, updating metadata...")
             else:
-                # Check if file already exists (different file with same name)
+                # Check if file already exists locally
                 if os.path.exists(dest):
                     if interactive:
-                        # Interactive mode (CLI): Ask user
                         try:
-                            print(f"[WARNING] A file named '{fname}' already exists in repo.")
+                            print(f"[WARNING] A file named '{fname}' already exists in local repo.")
                             choice = input("Overwrite it? (y/n): ").strip().lower()
                             if choice != 'y':
                                 print("[INFO] Publish cancelled.")
                                 return False
                         except (EOFError, OSError):
-                            # No terminal available, use overwrite parameter
                             if not overwrite:
                                 print(f"[ERROR] File '{fname}' already exists and overwrite=False")
                                 return False
                             print(f"[INFO] No terminal available, auto-overwriting '{fname}'")
                     else:
-                        # Non-interactive mode (API): Use overwrite parameter
                         if not overwrite:
                             print(f"[ERROR] File '{fname}' already exists and overwrite=False")
                             return False
                         print(f"[INFO] Overwriting existing file '{fname}'")
+
+                # Mark as busy if file is large
+                if self.adaptive_heartbeat and file_size > 10 * 1024 * 1024:  # > 10MB
+                    self.adaptive_heartbeat.start_file_transfer()
 
                 # Copy file into repository
                 try:
@@ -344,12 +450,13 @@ class Client:
                     print(f"[INFO] Copied '{local_path}' → '{dest}'")
                 except Exception as e:
                     print(f"[ERROR] Failed to copy file: {e}")
+                    if self.adaptive_heartbeat and file_size > 10 * 1024 * 1024:
+                        self.adaptive_heartbeat.end_file_transfer()
                     return False
-            
-            # Get file metadata
-            stat = os.stat(dest)
-            file_size = stat.st_size
-            file_modified = stat.st_mtime
+                
+                # End transfer state
+                if self.adaptive_heartbeat and file_size > 10 * 1024 * 1024:
+                    self.adaptive_heartbeat.end_file_transfer()
 
             # Update local tracking
             metadata = FileMetadata(
@@ -377,7 +484,6 @@ class Client:
 
             if r and r.get('status') == 'ACK':
                 print(f"[SUCCESS] Published '{fname}' to network ({file_size} bytes).")
-                # Save state to persist across reconnects
                 self._save_state()
                 return True
             else:
@@ -387,6 +493,84 @@ class Client:
         except Exception as e:
             print(f"[ERROR] Exception during publish: {e}")
             return False
+    
+    def _check_duplicate_on_network(self, fname, size, modified):
+        """
+        Check if file with same metadata exists on network
+        Uses metadata comparison (size + modified time) instead of hashing
+        
+        Returns:
+            {
+                'has_exact_duplicate': bool,
+                'has_partial_duplicate': bool,
+                'exact_matches': [...],
+                'partial_matches': [...]
+            }
+        """
+        try:
+            with self.central_lock:
+                send_json(self.central, {"action": "LIST"})
+                response = recv_json(self.central)
+            
+            if not response or response.get('status') != 'OK':
+                return {
+                    'has_exact_duplicate': False,
+                    'has_partial_duplicate': False,
+                    'exact_matches': [],
+                    'partial_matches': []
+                }
+            
+            registry = response.get('registry', {})
+            exact_matches = []
+            partial_matches = []
+            
+            for hostname, info in registry.items():
+                # Skip own files
+                if hostname == self.hostname:
+                    continue
+                
+                files = info.get('files', {})
+                if fname in files:
+                    finfo = files[fname]
+                    other_size = finfo.get('size', 0)
+                    other_modified = finfo.get('modified', 0)
+                    
+                    # Check if metadata matches
+                    exact_match, size_match, time_match = FileMetadata(
+                        fname, size, modified
+                    ).matches_metadata(other_size, other_modified)
+                    
+                    if exact_match:
+                        exact_matches.append({
+                            'hostname': hostname,
+                            'size': other_size,
+                            'modified': other_modified
+                        })
+                    elif size_match or time_match:
+                        # Partial match (different file)
+                        partial_matches.append({
+                            'hostname': hostname,
+                            'size': other_size,
+                            'modified': other_modified,
+                            'size_match': size_match,
+                            'time_match': time_match
+                        })
+            
+            return {
+                'has_exact_duplicate': len(exact_matches) > 0,
+                'has_partial_duplicate': len(partial_matches) > 0,
+                'exact_matches': exact_matches,
+                'partial_matches': partial_matches
+            }
+            
+        except Exception as e:
+            print(f"[WARN] Failed to check duplicates: {e}")
+            return {
+                'has_exact_duplicate': False,
+                'has_partial_duplicate': False,
+                'exact_matches': [],
+                'partial_matches': []
+            }
     
     def unpublish(self, fname):
         """Remove a file from the published list and notify the server"""
@@ -428,15 +612,57 @@ class Client:
 
     def request(self, fname, save_path=None):
         """
-        Request a file from the network
+        Request a file from the network with duplicate name warning
         
         Args:
             fname: Name of the file to download
             save_path: Optional custom save path. If None, saves to repo directory
         """
+        # Mark activity for adaptive heartbeat
+        if self.adaptive_heartbeat:
+            self.adaptive_heartbeat.mark_activity("fetch")
+        
+        # Check if file with same name already exists locally
+        if fname in self.local_files:
+            local_meta = self.local_files[fname]
+            print(f"\n[WARNING] File '{fname}' already exists in local repository!")
+            print(f"   Local file - Size: {local_meta.size} bytes, Modified: {datetime.fromtimestamp(local_meta.modified).strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Try to get info about the file to download
+            with self.central_lock:
+                send_json(self.central, {"action":"REQUEST","data":{"fname":fname}})
+                r = recv_json(self.central)
+            
+            if r and r.get('status') == 'FOUND':
+                hosts = r.get('hosts', [])
+                if hosts:
+                    remote_host = hosts[0]
+                    print(f"   Remote file - Size: {remote_host.get('size', 'unknown')} bytes")
+                    
+                    # Check if they're the same file
+                    if remote_host.get('size') == local_meta.size:
+                        remote_modified = remote_host.get('modified', 0)
+                        if abs(remote_modified - local_meta.modified) < 2:
+                            print(f"\n[INFO] Files appear identical (same size and time). Download may be unnecessary.")
+                        else:
+                            print(f"\n[WARNING] Files have same size but different modified times!")
+                    else:
+                        print(f"\n[WARNING] Files have different sizes - different content!")
+                    
+                    # Ask user if they want to continue
+                    try:
+                        choice = input("\nContinue with download? (y/n): ").strip().lower()
+                        if choice != 'y':
+                            print("[INFO] Download cancelled.")
+                            return None
+                    except (EOFError, OSError):
+                        # Non-interactive mode, continue anyway
+                        print("[INFO] Non-interactive mode, continuing download...")
+        
         with self.central_lock:
             send_json(self.central, {"action":"REQUEST","data":{"fname":fname}})
             r = recv_json(self.central)
+        
         if not r:
             print("No response from server")
             return None
@@ -447,6 +673,7 @@ class Client:
         if not hosts:
             print("No hosts returned")
             return None
+        
         picked = hosts[0]
         print("Attempting download from", picked['hostname'], picked['ip'], picked['port'])
         threading.Thread(target=self.download_from_peer, args=(picked['ip'], picked['port'], fname, save_path), daemon=True).start()
@@ -454,7 +681,7 @@ class Client:
 
     def download_from_peer(self, ip, port, fname, save_path=None):
         """
-        Download a file from a peer
+        Download a file from a peer with file transfer state tracking
         
         Args:
             ip: Peer IP address
@@ -462,6 +689,10 @@ class Client:
             fname: Filename to download
             save_path: Optional custom save path. If None, saves to repo directory
         """
+        # Mark as busy for large file transfers
+        if self.adaptive_heartbeat:
+            self.adaptive_heartbeat.start_file_transfer()
+        
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(10)
@@ -473,6 +704,8 @@ class Client:
                 if not chunk:
                     s.close()
                     print("[ERROR] Connection closed unexpectedly")
+                    if self.adaptive_heartbeat:
+                        self.adaptive_heartbeat.end_file_transfer()
                     return
                 buf += chunk
                 if b'\n' in buf:
@@ -517,13 +750,21 @@ class Client:
                         print(f"[SUCCESS] Downloaded '{fname}' -> '{outpath}' ({stat.st_size} bytes)")
                         print(f"[INFO] File saved as local only. Use 'publish' command to share with network.")
                         s.close()
+                        
+                        # End transfer state
+                        if self.adaptive_heartbeat:
+                            self.adaptive_heartbeat.end_file_transfer()
                         return
                     else:
                         print("[ERROR] Peer error:", line.decode().strip())
                         s.close()
+                        if self.adaptive_heartbeat:
+                            self.adaptive_heartbeat.end_file_transfer()
                         return
         except Exception as e:
             print(f"[ERROR] Download failed: {e}")
+            if self.adaptive_heartbeat:
+                self.adaptive_heartbeat.end_file_transfer()
 
     def discover(self, hostname):
         with self.central_lock:
