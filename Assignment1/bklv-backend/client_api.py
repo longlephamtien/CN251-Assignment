@@ -227,8 +227,11 @@ def get_local_files():
                 'name': meta.name,
                 'size': meta.size,
                 'modified': meta.modified,
+                'created': meta.created,
                 'path': meta.path,
-                'is_published': meta.is_published
+                'is_published': meta.is_published,
+                'added_at': meta.added_at,
+                'published_at': meta.published_at
             })
         return jsonify({'success': True, 'files': files})
     except Exception as e:
@@ -245,6 +248,9 @@ def get_published_files():
                 'name': meta.name,
                 'size': meta.size,
                 'modified': meta.modified,
+                'created': meta.created,
+                'path': meta.path,
+                'added_at': meta.added_at,
                 'published_at': meta.published_at
             })
         return jsonify({'success': True, 'files': files})
@@ -270,6 +276,7 @@ def get_network_files():
                         'name': fname,
                         'size': finfo.get('size', 0),
                         'modified': finfo.get('modified', 0),
+                        'created': finfo.get('created', finfo.get('modified', 0)),
                         'published_at': finfo.get('published_at', 0),
                         'owner_hostname': hostname,
                         'owner_name': info.get('display_name', hostname),
@@ -285,7 +292,7 @@ def get_network_files():
 
 @app.route('/api/client/add-file', methods=['POST'])
 def add_file():
-    """Add a file to local tracking"""
+    """Add a file to local tracking by path (no copying)"""
     try:
         client = get_client()
         data = request.json
@@ -294,12 +301,38 @@ def add_file():
         if not filepath:
             return jsonify({'success': False, 'error': 'filepath required'}), 400
         
-        success = client.add_local_file(filepath)
+        # Expand and validate path
+        filepath = os.path.abspath(os.path.expanduser(filepath))
+        
+        if not os.path.exists(filepath):
+            return jsonify({'success': False, 'error': f'File not found: {filepath}'}), 404
+        
+        if not os.path.isfile(filepath):
+            return jsonify({'success': False, 'error': f'Path is not a file: {filepath}'}), 400
+        
+        # Add file to tracking (metadata only, no copying)
+        success = client.add_local_file(filepath, auto_save_metadata=True)
+        
         if success:
-            return jsonify({'success': True, 'message': 'File added to tracking'})
+            fname = os.path.basename(filepath)
+            file_meta = client.local_files.get(fname)
+            return jsonify({
+                'success': True, 
+                'message': f'File "{fname}" tracked (reference to: {filepath})',
+                'file': {
+                    'name': fname,
+                    'size': file_meta.size,
+                    'created': file_meta.created,
+                    'modified': file_meta.modified,
+                    'path': filepath,
+                    'added_at': file_meta.added_at
+                }
+            })
         else:
             return jsonify({'success': False, 'error': 'Failed to add file'}), 400
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/client/check-duplicate', methods=['POST'])
@@ -366,102 +399,199 @@ def check_local_duplicate():
 
 @app.route('/api/client/upload', methods=['POST'])
 def upload_file():
-    """Upload a file from browser to repo and optionally publish"""
+    """
+    Track a file from user's computer by storing its path (NO COPYING).
+    For browser uploads, we need to receive the file but can save it to a temp location
+    or the user needs to provide a path to an existing file on their system.
+    """
     try:
         client = get_client()
         
-        # Check if file is in request
-        if 'file' not in request.files:
-            return jsonify({'success': False, 'error': 'No file provided'}), 400
+        # Check if user provided a file path (preferred method)
+        file_path = request.form.get('file_path')
         
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'success': False, 'error': 'No file selected'}), 400
+        if file_path:
+            # User specified a file path on their system - just track it
+            file_path = os.path.abspath(os.path.expanduser(file_path))
+            
+            if not os.path.exists(file_path):
+                return jsonify({'success': False, 'error': f'File not found: {file_path}'}), 404
+            
+            if not os.path.isfile(file_path):
+                return jsonify({'success': False, 'error': f'Path is not a file: {file_path}'}), 400
+            
+            fname = os.path.basename(file_path)
+            
+            # Get file metadata from original location
+            from client import get_file_metadata_crossplatform, FileMetadata
+            try:
+                meta_dict = get_file_metadata_crossplatform(file_path)
+            except Exception as e:
+                print(f"[WARN] Failed to read metadata, using fallback: {e}")
+                stat = os.stat(file_path)
+                meta_dict = {
+                    'size': stat.st_size,
+                    'modified': stat.st_mtime,
+                    'created': stat.st_mtime,
+                    'path': file_path
+                }
+            
+            # Track metadata only - file stays at original location
+            metadata = FileMetadata(
+                name=fname,
+                size=meta_dict['size'],
+                modified=meta_dict['modified'],
+                created=meta_dict['created'],
+                path=file_path,  # Original path on user's computer
+                is_published=False,
+                added_at=time.time()  # When added to tracking
+            )
+            client.local_files[fname] = metadata
+            
+            # Save metadata to JSON file
+            client._save_file_metadata(fname)
+            
+            # Auto publish if requested
+            auto_publish = request.form.get('auto_publish', 'false').lower() == 'true'
+            if auto_publish:
+                def publish_task():
+                    client.publish(file_path, fname, overwrite=True, interactive=False)
+                threading.Thread(target=publish_task, daemon=True).start()
+                message = f'File "{fname}" tracked and publishing...'
+            else:
+                message = f'File "{fname}" tracked successfully (reference to: {file_path})'
+            
+            return jsonify({
+                'success': True, 
+                'message': message,
+                'file': {
+                    'name': fname,
+                    'size': meta_dict['size'],
+                    'path': file_path,
+                    'added_at': metadata.added_at
+                }
+            })
         
-        # Get optional parameters
-        auto_publish = request.form.get('auto_publish', 'false').lower() == 'true'
-        force_upload = request.form.get('force_upload', 'false').lower() == 'true'
-        
-        # Save file to repo directory
-        fname = os.path.basename(file.filename)  # Sanitize filename
-        dest_path = os.path.join(client.repo_dir, fname)
-        
-        # Check if file exists (unless force_upload is True)
-        if os.path.exists(dest_path) and not force_upload:
-            return jsonify({'success': False, 'error': f'File "{fname}" already exists in repository'}), 400
-        
-        # Save the uploaded file
-        file.save(dest_path)
-        
-        # Add to local files
-        stat = os.stat(dest_path)
-        from client import FileMetadata
-        metadata = FileMetadata(
-            name=fname,
-            size=stat.st_size,
-            modified=stat.st_mtime,
-            path=dest_path,
-            is_published=False
-        )
-        client.local_files[fname] = metadata
-        
-        # Auto publish if requested
-        if auto_publish:
-            def publish_task():
-                # Use interactive=False for API calls, overwrite=True to auto-replace
-                client.publish(dest_path, fname, overwrite=True, interactive=False)
-            threading.Thread(target=publish_task, daemon=True).start()
-            message = f'File "{fname}" uploaded and publishing...'
         else:
-            message = f'File "{fname}" uploaded successfully'
-        
-        return jsonify({
-            'success': True, 
-            'message': message,
-            'file': {
-                'name': fname,
-                'size': stat.st_size,
-                'path': dest_path
-            }
-        })
+            # Browser file upload - need to save somewhere first
+            # For browser uploads, save to repo as temporary storage
+            if 'file' not in request.files:
+                return jsonify({'success': False, 'error': 'No file provided. Use file_path parameter to track existing files.'}), 400
+            
+            file = request.files['file']
+            if file.filename == '':
+                return jsonify({'success': False, 'error': 'No file selected'}), 400
+            
+            # Get optional parameters
+            auto_publish = request.form.get('auto_publish', 'false').lower() == 'true'
+            force_upload = request.form.get('force_upload', 'false').lower() == 'true'
+            
+            # For browser uploads, we must save the file somewhere
+            # Save to repo directory as the "original" location for browser-uploaded files
+            fname = os.path.basename(file.filename)
+            dest_path = os.path.join(client.repo_dir, fname)
+            
+            # Check if file exists (unless force_upload is True)
+            if os.path.exists(dest_path) and not force_upload:
+                return jsonify({'success': False, 'error': f'File "{fname}" already exists'}), 400
+            
+            # Save the uploaded file
+            file.save(dest_path)
+            
+            # Get file metadata with cross-platform support
+            from client import get_file_metadata_crossplatform, FileMetadata
+            try:
+                meta_dict = get_file_metadata_crossplatform(dest_path)
+            except Exception as e:
+                print(f"[WARN] Failed to read metadata, using fallback: {e}")
+                stat = os.stat(dest_path)
+                meta_dict = {
+                    'size': stat.st_size,
+                    'modified': stat.st_mtime,
+                    'created': stat.st_mtime,
+                    'path': dest_path
+                }
+            
+            # Add to local files with added_at timestamp
+            metadata = FileMetadata(
+                name=fname,
+                size=meta_dict['size'],
+                modified=meta_dict['modified'],
+                created=meta_dict['created'],
+                path=dest_path,  # Saved in repo for browser uploads
+                is_published=False,
+                added_at=time.time()  # Track when added
+            )
+            client.local_files[fname] = metadata
+            
+            # Save metadata to JSON file
+            client._save_file_metadata(fname)
+            
+            # Auto publish if requested
+            if auto_publish:
+                def publish_task():
+                    client.publish(dest_path, fname, overwrite=True, interactive=False)
+                threading.Thread(target=publish_task, daemon=True).start()
+                message = f'File "{fname}" uploaded and publishing...'
+            else:
+                message = f'File "{fname}" uploaded successfully'
+            
+            return jsonify({
+                'success': True, 
+                'message': message,
+                'file': {
+                    'name': fname,
+                    'size': meta_dict['size'],
+                    'path': dest_path,
+                    'added_at': metadata.added_at
+                }
+            })
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/client/publish', methods=['POST'])
 def publish_file():
-    """Publish a file to the network"""
+    """Publish a file to the network (metadata only - no file copying)"""
     try:
         client = get_client()
         data = request.json
-        fname = data.get('fname')  # Changed to just fname since file should already be in repo
-        local_path = data.get('local_path')  # Optional, if provided will copy to repo
+        fname = data.get('fname')  # Filename to publish as
+        local_path = data.get('local_path')  # Path to actual file
         
         if not fname:
             return jsonify({'success': False, 'error': 'fname required'}), 400
         
-        # If local_path provided, use it; otherwise look in repo
+        # If local_path not provided, look in local_files
         if not local_path:
-            # File should already be in local_files
             if fname in client.local_files:
                 local_path = client.local_files[fname].path
             else:
-                # Try repo directory
-                local_path = os.path.join(client.repo_dir, fname)
-                if not os.path.exists(local_path):
-                    return jsonify({'success': False, 'error': 'File not found in repository'}), 404
+                return jsonify({'success': False, 'error': f'File "{fname}" not found. Please provide local_path'}), 404
         
-        # Run publish in a separate thread to avoid blocking
-        def publish_task():
-            # Use interactive=False for API calls, overwrite=True to auto-replace
-            success = client.publish(local_path, fname, overwrite=True, interactive=False)
-            if not success:
-                print(f"[API] Failed to publish {fname}")
+        # Validate file path exists
+        if not os.path.exists(local_path):
+            return jsonify({'success': False, 'error': f'File not found: {local_path}'}), 404
         
-        thread = threading.Thread(target=publish_task, daemon=True)
-        thread.start()
+        if not os.path.isfile(local_path):
+            return jsonify({'success': False, 'error': f'Path is not a file: {local_path}'}), 400
         
-        return jsonify({'success': True, 'message': 'Publishing file...'})
+        # Publish (stores metadata only, no copying)
+        # Returns (success: bool, error_msg: str or None)
+        success, error = client.publish(local_path, fname, overwrite=True, interactive=False)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': f'File "{fname}" published successfully',
+                'path': local_path
+            })
+        else:
+            return jsonify({'success': False, 'error': error or 'Failed to publish'}), 500
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/client/fetch', methods=['POST'])
@@ -595,6 +725,46 @@ def scan_directory():
             'message': f'Added {added} files to tracking',
             'count': added
         })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/client/validate-file', methods=['POST'])
+def validate_file():
+    """Validate that a file path exists and is readable"""
+    try:
+        client = get_client()
+        data = request.json
+        fname = data.get('fname')
+        
+        if not fname:
+            return jsonify({'success': False, 'error': 'fname required'}), 400
+        
+        # Check if file is in published files
+        if fname not in client.published_files:
+            return jsonify({
+                'success': False,
+                'exists': False,
+                'error': 'File not in published files'
+            })
+        
+        file_metadata = client.published_files[fname]
+        is_valid, error_msg = file_metadata.validate_path()
+        
+        if is_valid:
+            return jsonify({
+                'success': True,
+                'exists': True,
+                'path': file_metadata.path,
+                'size': file_metadata.size,
+                'modified': file_metadata.modified
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'exists': False,
+                'error': error_msg,
+                'path': file_metadata.path
+            })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

@@ -2,7 +2,7 @@ import React from 'react';
 import { Button, FormInput } from '../common';
 
 /**
- * FetchFileModal Component with duplicate warning
+ * FetchFileModal Component with duplicate warning and source validation
  */
 function FetchFileModal({ 
   file, 
@@ -11,7 +11,8 @@ function FetchFileModal({
   onSubmit, 
   onClose,
   formatFileSize,
-  localDuplicateInfo
+  localDuplicateInfo,
+  validationWarning
 }) {
   if (!file) return null;
 
@@ -41,11 +42,32 @@ function FetchFileModal({
               disabled
             />
             <small className="text-gray">
-              Size: {formatFileSize(file.size)} • 
-              Modified: {formatTimestamp(file.modified)} •
+              {/* Size: {formatFileSize(file.size)} • 
+              Modified: {formatTimestamp(file.modified)} • */}
               Owner: {file.owner_name}
             </small>
           </div>
+
+          {/* Source File Validation Warning */}
+          {validationWarning && (
+            <div style={{
+              padding: '1rem',
+              marginBottom: '1rem',
+              backgroundColor: '#f8d7da',
+              border: '1px solid #dc3545',
+              borderRadius: '4px'
+            }}>
+              <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#721c24' }}>
+                Source File May Be Unavailable
+              </div>
+              <div style={{ fontSize: '0.9rem', color: '#721c24' }}>
+                {validationWarning}
+                <div style={{ marginTop: '0.5rem', fontStyle: 'italic' }}>
+                  Download may fail if the file has been moved or deleted at the source.
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Local Duplicate Warning */}
           {hasLocalDuplicate && (
@@ -61,7 +83,7 @@ function FetchFileModal({
                 marginBottom: '0.5rem', 
                 color: filesAreSame ? '#0c5460' : '#856404' 
               }}>
-                {filesAreSame ? '✓ File Already Downloaded' : 'Local File Exists'}
+                {filesAreSame ? 'File Already Downloaded' : 'Local File Exists'}
               </div>
               <div style={{ 
                 fontSize: '0.9rem', 
@@ -82,54 +104,17 @@ function FetchFileModal({
                     <li>Modified: {formatTimestamp(file.modified)}</li>
                   </ul>
                 </div>
-                {filesAreSame ? (
+                {/* {filesAreSame ? (
                   <div style={{ marginTop: '0.5rem', fontWeight: 'bold' }}>
-                    💡 Files appear identical. Download may be unnecessary.
+                    Files appear identical
                   </div>
                 ) : (
                   <div style={{ marginTop: '0.5rem', fontWeight: 'bold' }}>
-                    ⚠️ Files have different content. Downloading will overwrite your local file.
+                    Files have different content. Downloading will overwrite your local file.
                   </div>
-                )}
+                )} */}
               </div>
             </div>
-          )}
-          
-          <div className="form-group">
-            <label className="form-label">Download Option</label>
-            <div>
-              <label style={{display: 'flex', alignItems: 'center', cursor: 'pointer', marginBottom: '0.5rem'}}>
-                <input
-                  type="radio"
-                  name="downloadOption"
-                  checked={fetchForm.fetchToBackend}
-                  onChange={() => setFetchForm({...fetchForm, fetchToBackend: true})}
-                  style={{marginRight: '0.5rem'}}
-                />
-                <span>Download to backend repository</span>
-              </label>
-              <label style={{display: 'flex', alignItems: 'center', cursor: 'pointer'}}>
-                <input
-                  type="radio"
-                  name="downloadOption"
-                  checked={!fetchForm.fetchToBackend}
-                  onChange={() => setFetchForm({...fetchForm, fetchToBackend: false})}
-                  style={{marginRight: '0.5rem'}}
-                />
-                <span>Download to browser (choose location)</span>
-              </label>
-            </div>
-          </div>
-          
-          {fetchForm.fetchToBackend && (
-            <FormInput
-              label="Custom Path (Optional)"
-              type="text"
-              value={fetchForm.customPath}
-              onChange={(e) => setFetchForm({...fetchForm, customPath: e.target.value})}
-              placeholder="Leave empty for default repository location"
-              helpText="Enter full path on the server, e.g., /path/to/folder or ~/Documents"
-            />
           )}
           
           <Button 
@@ -137,11 +122,9 @@ function FetchFileModal({
             variant={hasLocalDuplicate && !filesAreSame ? "warning" : "primary"}
             style={{width: '100%'}}
           >
-            {hasLocalDuplicate && filesAreSame ? 
+            {filesAreSame  ? 
               'Download Anyway' : 
-              hasLocalDuplicate ? 
-              'Download & Overwrite' :
-              fetchForm.fetchToBackend ? 'Download to Backend' : 'Download to Browser'
+              'Download'
             }
           </Button>
         </form>

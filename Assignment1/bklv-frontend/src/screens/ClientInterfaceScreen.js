@@ -11,7 +11,7 @@ import {
   PublishedFilesGrid,
   NetworkFilesTable,
   NetworkFilesGrid,
-  UploadFileModal,
+  AddFileModal,
   FetchFileModal
 } from '../components/client';
 import { useNotification } from '../hooks/useNotification';
@@ -43,7 +43,7 @@ function ClientInterfaceScreen({ onBack }) {
   
   // Modal states
   const [showAuthModal, setShowAuthModal] = useState(true);
-  const [showPublishModal, setShowPublishModal] = useState(false);
+  const [showAddFileModal, setShowAddFileModal] = useState(false);
   const [showFetchModal, setShowFetchModal] = useState(false);
   const [selectedNetworkFile, setSelectedNetworkFile] = useState(null);
   
@@ -59,7 +59,7 @@ function ClientInterfaceScreen({ onBack }) {
     server_port: config.server.defaultPort
   });
   
-  const [uploadForm, setUploadForm] = useState({
+  const [addForm, setAddForm] = useState({
     selectedFile: null,
     autoPublish: false
   });
@@ -70,9 +70,10 @@ function ClientInterfaceScreen({ onBack }) {
   });
 
   // Duplicate detection states
-  const [uploadDuplicateInfo, setUploadDuplicateInfo] = useState(null);
-  const [uploadLocalDuplicateInfo, setUploadLocalDuplicateInfo] = useState(null);
+  const [addDuplicateInfo, setAddDuplicateInfo] = useState(null);
+  const [addLocalDuplicateInfo, setAddLocalDuplicateInfo] = useState(null);
   const [fetchLocalDuplicateInfo, setFetchLocalDuplicateInfo] = useState(null);
+  const [fetchValidationWarning, setFetchValidationWarning] = useState(null);
 
   // Handle authentication
   const handleAuth = async (e) => {
@@ -222,62 +223,6 @@ function ClientInterfaceScreen({ onBack }) {
   }, [initialized]);
 
   // Handle file selection
-  const handleFileSelect = async (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setUploadForm({
-        ...uploadForm,
-        selectedFile: file
-      });
-      
-      // Check for duplicates when file is selected
-      await checkUploadDuplicates(file);
-    }
-  };
-
-  // Check for duplicates on network and locally
-  const checkUploadDuplicates = async (file) => {
-    try {
-      // Check network duplicates
-      const networkResponse = await fetch(`${apiBaseUrl}/check-duplicate`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          fname: file.name,
-          size: file.size,
-          modified: Math.floor(file.lastModified / 1000) // Convert to seconds
-        })
-      });
-      
-      const networkData = await networkResponse.json();
-      if (networkData.success) {
-        setUploadDuplicateInfo(networkData);
-      }
-      
-      // Check local duplicates
-      const localResponse = await fetch(`${apiBaseUrl}/check-local-duplicate`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          fname: file.name
-        })
-      });
-      
-      const localData = await localResponse.json();
-      if (localData.success) {
-        setUploadLocalDuplicateInfo(localData);
-      }
-    } catch (error) {
-      console.error('Failed to check duplicates:', error);
-    }
-  };
-
   // Check for local duplicates when fetching a file
   const checkFetchDuplicates = async (fname) => {
     try {
@@ -299,47 +244,178 @@ function ClientInterfaceScreen({ onBack }) {
     }
   };
 
-  // Upload and optionally publish file
-  const handleUploadFile = async (e) => {
+  // Handle file selection from browser
+  const handleFileSelect = async (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setAddForm({ ...addForm, selectedFile: file });
+      
+      // Check for duplicates
+      await checkAddFileDuplicates(file.name, file.size, file.lastModified / 1000);
+    }
+  };
+
+  // Check for duplicate files when adding
+  const checkAddFileDuplicates = async (fname, size, modified) => {
+    try {
+      // Check local duplicates
+      const localResponse = await fetch(`${apiBaseUrl}/check-local-duplicate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ fname })
+      });
+      
+      const localData = await localResponse.json();
+      if (localData.success) {
+        setAddLocalDuplicateInfo(localData.exists ? localData : null);
+      }
+
+      // Check network duplicates
+      const networkResponse = await fetch(`${apiBaseUrl}/check-duplicate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ fname, size, modified })
+      });
+      
+      const networkData = await networkResponse.json();
+      if (networkData.success) {
+        setAddDuplicateInfo(networkData.has_exact_duplicate || networkData.has_partial_duplicate ? {
+          has_exact_duplicate: networkData.has_exact_duplicate,
+          has_partial_duplicate: networkData.has_partial_duplicate,
+          exact_matches: networkData.exact_matches || [],
+          partial_matches: networkData.partial_matches || []
+        } : null);
+      }
+    } catch (error) {
+      console.error('Failed to check duplicates:', error);
+    }
+  };
+
+  // Handle Electron file selection
+  const handleElectronFileSelect = async () => {
+    if (!window.electronAPI) {
+      console.error('Electron API not available');
+      return;
+    }
+
+    const result = await window.electronAPI.openFileDialog();
+    
+    if (!result.canceled) {
+      // Create a file-like object with the path information
+      const fileInfo = {
+        name: result.fileName,
+        size: result.fileSize,
+        type: result.fileType,
+        path: result.filePath,
+        modified: result.modified,
+        created: result.created,
+        lastModified: result.modified * 1000 // Convert to milliseconds for consistency
+      };
+      
+      setAddForm({ ...addForm, selectedFile: fileInfo });
+      
+      // Check for duplicates
+      await checkAddFileDuplicates(result.fileName, result.fileSize, result.modified);
+    }
+  };
+
+  // Add file to tracking by path (no upload/copy)
+  const handleAddFile = async (e) => {
     e.preventDefault();
     
-    if (!uploadForm.selectedFile) {
-      showNotification('warning', 'No File Selected', 'Please select a file to upload');
+    if (!addForm.selectedFile) {
+      showNotification('warning', 'No File Selected', 'Please select a file');
       return;
     }
     
     try {
-      const formData = new FormData();
-      formData.append('file', uploadForm.selectedFile);
-      formData.append('auto_publish', uploadForm.autoPublish);
-      formData.append('force_upload', 'true'); // Allow overwriting if user confirmed
+      const file = addForm.selectedFile;
+      // Check if running in Electron (file will have .path property)
+      const isElectron = window.electronAPI?.isElectron || false;
+      let filePath;
       
-      showNotification('info', 'Uploading', `Uploading ${uploadForm.selectedFile.name}...`);
+      if (isElectron && file.path) {
+        // Electron: Use the actual file path from the file dialog
+        filePath = file.path;
+      } else {
+        // Browser: Try to get path (will likely just be filename)
+        filePath = file.path || file.webkitRelativePath || file.name;
+      }
       
-      const response = await fetch(`${apiBaseUrl}/upload`, {
+      showNotification('info', 'Adding File', `Tracking file: ${file.name}...`);
+      
+      const response = await fetch(`${apiBaseUrl}/add-file`, {
         method: 'POST',
         headers: {
+          'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: formData
+        body: JSON.stringify({
+          filepath: filePath,
+          auto_publish: addForm.autoPublish
+        })
       });
       
       const data = await response.json();
       
       if (data.success) {
         showNotification('success', 'Success', data.message);
-        setShowPublishModal(false);
-        setUploadForm({ selectedFile: null, autoPublish: false });
-        setUploadDuplicateInfo(null);
-        setUploadLocalDuplicateInfo(null);
+        
+        // Auto publish if requested
+        if (addForm.autoPublish && data.file) {
+          setTimeout(async () => {
+            try {
+              const publishResponse = await fetch(`${apiBaseUrl}/publish`, {
+                method: 'POST',
+                headers: { 
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                  fname: data.file.name,
+                  local_path: data.file.path
+                })
+              });
+              
+              const publishData = await publishResponse.json();
+              if (publishData.success) {
+                showNotification('success', 'Published', `File "${data.file.name}" published to network!`);
+              }
+            } catch (err) {
+              console.error('Publish error:', err);
+            }
+          }, 500);
+        }
+        
+        setShowAddFileModal(false);
+        setAddForm({ selectedFile: null, autoPublish: false });
+        setAddDuplicateInfo(null);
+        setAddLocalDuplicateInfo(null);
         setTimeout(() => {
           fetchAllData();
         }, 1000);
       } else {
-        showNotification('error', 'Upload Failed', data.error);
+        // Handle file validation errors with more specific messages
+        const errorMsg = data.error || 'Failed to add file';
+        if (errorMsg.includes('not found') || errorMsg.includes('Not found')) {
+          showNotification('error', 'File Not Found', `The file could not be found at: ${filePath}`);
+        } else if (errorMsg.includes('not readable') || errorMsg.includes('permission')) {
+          showNotification('error', 'Permission Denied', `Cannot read the file. Please check file permissions.`);
+        } else if (errorMsg.includes('not a file')) {
+          showNotification('error', 'Invalid Path', `The path is not a valid file: ${filePath}`);
+        } else {
+          showNotification('error', 'Failed', errorMsg);
+        }
       }
     } catch (error) {
-      showNotification('error', 'Error', 'Failed to upload: ' + error.message);
+      console.error('Add file error:', error);
+      showNotification('error', 'Error', `Failed to add file: ${error.message}`);
     }
   };
 
@@ -368,7 +444,20 @@ function ClientInterfaceScreen({ onBack }) {
           fetchPublishedFiles();
         }, 1000);
       } else {
-        showNotification('error', 'Publish Failed', data.error);
+        // Handle file validation errors
+        const errorMsg = data.error || 'Publish failed';
+        if (errorMsg.includes('not found') || errorMsg.includes('Not found')) {
+          showNotification('error', 'File Not Found', 
+            `The file "${file.name}" no longer exists at its original location. Please remove it from local files or re-upload.`);
+        } else if (errorMsg.includes('not readable') || errorMsg.includes('permission')) {
+          showNotification('error', 'Permission Denied', 
+            `Cannot read "${file.name}". Please check file permissions.`);
+        } else if (errorMsg.includes('not a file')) {
+          showNotification('error', 'Invalid Path', 
+            `The path for "${file.name}" is not a valid file.`);
+        } else {
+          showNotification('error', 'Publish Failed', errorMsg);
+        }
       }
     } catch (error) {
       showNotification('error', 'Error', 'Failed to publish: ' + error.message);
@@ -407,9 +496,19 @@ function ClientInterfaceScreen({ onBack }) {
   const handleFetchFile = async (file) => {
     setSelectedNetworkFile(file);
     setFetchForm({ fetchToBackend: true, customPath: '' });
+    setFetchValidationWarning(null);
     
     // Check for local duplicates before showing modal
     await checkFetchDuplicates(file.name);
+    
+    // Optionally validate that the source file still exists at the peer
+    // This is a client-side warning, actual validation happens during transfer
+    try {
+      // We can add peer-side validation here if needed
+      // For now, we'll rely on the PeerServer's validation during transfer
+    } catch (error) {
+      console.warn('Failed to pre-validate file:', error);
+    }
     
     setShowFetchModal(true);
   };
@@ -418,81 +517,75 @@ function ClientInterfaceScreen({ onBack }) {
     e.preventDefault();
     
     try {
-      if (fetchForm.fetchToBackend) {
-        showNotification('info', 'Downloading', `Downloading ${selectedNetworkFile.name} to backend...`);
+      // Prompt user to select download location
+      let downloadPath = null;
+      
+      // Check if running in Electron
+      if (window.electronAPI?.isElectron) {
+        // Show directory picker
+        const result = await window.electronAPI.openDirectoryDialog();
         
-        const response = await fetch(`${apiBaseUrl}/fetch`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            fname: selectedNetworkFile.name,
-            save_path: fetchForm.customPath || null
-          })
-        });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-          showNotification('success', 'Download Started', `Downloading to ${data.save_path}`);
-          setShowFetchModal(false);
-          setTimeout(() => {
-            fetchLocalFiles();
-          }, 3000);
-        } else {
-          showNotification('error', 'Download Failed', data.error);
+        if (result.canceled) {
+          // User cancelled the directory selection
+          return;
         }
+        
+        downloadPath = result.directoryPath;
       } else {
-        showNotification('info', 'Downloading', `Fetching ${selectedNetworkFile.name} to browser...`);
+        // Browser mode - use a simple prompt
+        downloadPath = window.prompt(
+          'Enter the full path where you want to save the file:',
+          '/Users/you/Downloads'
+        );
         
-        const fetchResponse = await fetch(`${apiBaseUrl}/fetch`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            fname: selectedNetworkFile.name,
-            save_path: null
-          })
-        });
-        
-        const fetchData = await fetchResponse.json();
-        
-        if (fetchData.success) {
-          setTimeout(async () => {
-            // Download file with authentication
-            const downloadResponse = await fetch(`${apiBaseUrl}/download/${encodeURIComponent(selectedNetworkFile.name)}`, {
-              headers: {
-                'Authorization': `Bearer ${token}`
-              }
-            });
-            
-            if (downloadResponse.ok) {
-              const blob = await downloadResponse.blob();
-              const url = window.URL.createObjectURL(blob);
-              const link = document.createElement('a');
-              link.href = url;
-              link.download = selectedNetworkFile.name;
-              document.body.appendChild(link);
-              link.click();
-              document.body.removeChild(link);
-              window.URL.revokeObjectURL(url);
-              
-              showNotification('success', 'Download Started', 'File download started to your browser');
-            } else {
-              showNotification('error', 'Download Failed', 'Failed to download file');
-            }
-            setShowFetchModal(false);
-          }, 2000);
+        if (!downloadPath) {
+          // User cancelled
+          return;
+        }
+      }
+      
+      // Download to selected location
+      showNotification('info', 'Downloading', `Downloading ${selectedNetworkFile.name}...`);
+      
+      const response = await fetch(`${apiBaseUrl}/fetch`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          fname: selectedNetworkFile.name,
+          save_path: downloadPath
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        showNotification('success', 'Download Complete', `Downloaded to ${downloadPath}`);
+        setShowFetchModal(false);
+        setTimeout(() => {
+          fetchLocalFiles();
+        }, 2000);
+      } else {
+        // Enhanced error handling for file validation issues
+        const errorMsg = data.error || 'Download failed';
+        if (errorMsg.includes('not found') || errorMsg.includes('Not found')) {
+          showNotification('error', 'File Not Found', 
+            `The file "${selectedNetworkFile.name}" is no longer available from ${selectedNetworkFile.owner_name}. The file may have been moved or deleted.`);
+        } else if (errorMsg.includes('not readable') || errorMsg.includes('permission')) {
+          showNotification('error', 'Access Denied', 
+            `Cannot access "${selectedNetworkFile.name}" from the source. The file may have restricted permissions.`);
+        } else if (errorMsg.includes('Connection') || errorMsg.includes('timeout')) {
+          showNotification('error', 'Connection Failed', 
+            `Cannot connect to ${selectedNetworkFile.owner_name}. The peer may be offline or unreachable.`);
         } else {
-          showNotification('error', 'Download Failed', fetchData.error);
+          showNotification('error', 'Download Failed', errorMsg);
         }
       }
     } catch (error) {
-      showNotification('error', 'Error', 'Failed to fetch: ' + error.message);
+      console.error('Fetch error:', error);
+      showNotification('error', 'Error', 'Failed to download file: ' + error.message);
     }
   };
 
@@ -597,10 +690,10 @@ function ClientInterfaceScreen({ onBack }) {
               {activeTab === 'local' && (
                 <Button
                   variant="primary"
-                  onClick={() => setShowPublishModal(true)}
+                  onClick={() => setShowAddFileModal(true)}
                   style={{ marginRight: '0.5rem' }}
                 >
-                  + Upload File
+                  + Add File
                 </Button>
               )}
               <Button variant="primary" onClick={fetchAllData}>
@@ -663,33 +756,37 @@ function ClientInterfaceScreen({ onBack }) {
                 files={networkFiles}
                 onDownload={handleFetchFile}
                 formatFileSize={formatFileSize}
+                formatTimestamp={formatTimestamp}
               />
             ) : (
               <NetworkFilesGrid
                 files={networkFiles}
                 onDownload={handleFetchFile}
                 formatFileSize={formatFileSize}
+                formatTimestamp={formatTimestamp}
               />
             )
           )}
         </ContentCard>
       </div>
 
-      {/* Upload/Publish Modal */}
-      {showPublishModal && (
-        <UploadFileModal
-          uploadForm={uploadForm}
-          setUploadForm={setUploadForm}
-          onSubmit={handleUploadFile}
+      {/* Add File Modal */}
+      {showAddFileModal && (
+        <AddFileModal
+          addForm={addForm}
+          setAddForm={setAddForm}
+          onSubmit={handleAddFile}
           onFileSelect={handleFileSelect}
+          onElectronFileSelect={handleElectronFileSelect}
           onClose={() => {
-            setShowPublishModal(false);
-            setUploadDuplicateInfo(null);
-            setUploadLocalDuplicateInfo(null);
+            setShowAddFileModal(false);
+            setAddForm({ selectedFile: null, autoPublish: false });
+            setAddDuplicateInfo(null);
+            setAddLocalDuplicateInfo(null);
           }}
           formatFileSize={formatFileSize}
-          duplicateInfo={uploadDuplicateInfo}
-          localDuplicateInfo={uploadLocalDuplicateInfo}
+          duplicateInfo={addDuplicateInfo}
+          localDuplicateInfo={addLocalDuplicateInfo}
         />
       )}
 
@@ -703,9 +800,11 @@ function ClientInterfaceScreen({ onBack }) {
           onClose={() => {
             setShowFetchModal(false);
             setFetchLocalDuplicateInfo(null);
+            setFetchValidationWarning(null);
           }}
           formatFileSize={formatFileSize}
           localDuplicateInfo={fetchLocalDuplicateInfo}
+          validationWarning={fetchValidationWarning}
         />
       )}
 
