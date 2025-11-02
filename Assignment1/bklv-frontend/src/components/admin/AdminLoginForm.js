@@ -23,6 +23,14 @@ function AdminLoginForm({ loginForm, setLoginForm, onSubmit, loading, onBack }) 
         required
       />
       
+      <FormInput
+        label="Server IP"
+        type="text"
+        value={loginForm.server_ip}
+        onChange={(e) => setLoginForm({...loginForm, server_ip: e.target.value})}
+        placeholder="localhost or IP address"
+      />
+      
       <Button 
         type="submit" 
         variant="primary" 

@@ -6,6 +6,8 @@ BKLV is a comprehensive Peer-to-Peer (P2P) file sharing system that enables dist
 
 The system is built with a Python backend implementing the P2P protocol and Flask REST APIs, paired with a React frontend for intuitive user interaction. It supports essential P2P operations including file publishing, discovery, fetching, and peer status monitoring, while maintaining persistent state across client reconnections.
 
+**🌐 NEW: LAN Support** - The system now supports multi-computer setup over local networks! See [LAN Setup Guide](./LAN_SETUP.md) or [Quick Start](./LAN_QUICK_START.md) for details.
+
 ## Architecture and Design
 
 ### System Architecture
@@ -890,6 +892,8 @@ cd ..
 
 ### Quick Start (Recommended)
 
+**For single computer (localhost) setup:**
+
 **Using the start script (macOS/Linux):**
 ```bash
 chmod +x start.sh
@@ -918,6 +922,18 @@ This script will:
 chmod +x stop.sh
 ./stop.sh
 ```
+
+---
+
+**For multi-computer (LAN) setup:**
+
+See the [**LAN Setup Guide**](./LAN_SETUP.md) for detailed instructions on running the server on one computer and connecting clients from other computers on the same network.
+
+Quick summary:
+1. **Host computer**: Set `SERVER_HOST=0.0.0.0` in `.env`, run `./start.sh`
+2. **Client computers**: Open browser to `http://<host-ip>:3000`, enter host's IP in login form
+
+📖 **[Full LAN Setup Guide](./LAN_SETUP.md)** | 🚀 **[LAN Quick Start](./LAN_QUICK_START.md)**
 
 ### Manual Start (Step-by-step)
 

@@ -23,7 +23,7 @@ try:
         SERVER_PORT,
         CLIENT_HEARTBEAT_INTERVAL
     )
-    CENTRAL_HOST = SERVER_HOST
+    CENTRAL_HOST = SERVER_HOST if SERVER_HOST != '0.0.0.0' else '127.0.0.1'
     CENTRAL_PORT = SERVER_PORT
 except:
     CENTRAL_HOST = '127.0.0.1'
@@ -129,12 +129,16 @@ class PeerServer(threading.Thread):
             conn.close()
 
 class Client:
-    def __init__(self, hostname, listen_port, repo_dir, display_name=None):
+    def __init__(self, hostname, listen_port, repo_dir, display_name=None, server_host=None, server_port=None):
         self.hostname = hostname
         self.display_name = display_name or hostname
         self.listen_port = listen_port
         self.repo_dir = repo_dir
         os.makedirs(self.repo_dir, exist_ok=True)
+        
+        # Server connection info (use provided or default)
+        self.server_host = server_host or CENTRAL_HOST
+        self.server_port = server_port or CENTRAL_PORT
         
         # Three-tier file management
         self.local_files = {}  # All files tracked by client (metadata only)
@@ -162,9 +166,15 @@ class Client:
         self._load_state()
         
         # Then connect and register
+        print(f"[INFO] Connecting to server at {self.server_host}:{self.server_port}")
         self.central_lock = threading.Lock()
         self.central = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.central.connect((CENTRAL_HOST, CENTRAL_PORT))
+        try:
+            self.central.connect((self.server_host, self.server_port))
+            print(f"[SUCCESS] Connected to server at {self.server_host}:{self.server_port}")
+        except Exception as e:
+            print(f"[ERROR] Failed to connect to server at {self.server_host}:{self.server_port}")
+            raise RuntimeError(f"Cannot connect to server: {e}")
         
         # Prepare files metadata for server (with restored state)
         files_metadata = {}
@@ -934,10 +944,13 @@ if __name__ == '__main__':
     parser.add_argument('--port', type=int, required=True, help='listening port for peer connections')
     parser.add_argument('--repo', default='repo', help='local repository folder')
     parser.add_argument('--name', help='display name for this client (default: hostname)')
+    parser.add_argument('--server-host', help=f'server IP address (default: {CENTRAL_HOST})')
+    parser.add_argument('--server-port', type=int, help=f'server port (default: {CENTRAL_PORT})')
     args = parser.parse_args()
-    c = Client(args.host, args.port, args.repo, args.name)
+    c = Client(args.host, args.port, args.repo, args.name, args.server_host, args.server_port)
     print(f"\n=== Client '{c.display_name}' started ===")
     print(f"Hostname: {c.hostname}")
     print(f"Repository: {c.repo_dir}")
     print(f"Listening on port: {c.listen_port}")
+    print(f"Connected to server: {c.server_host}:{c.server_port}")
     cli_loop(c)

@@ -147,20 +147,12 @@ def init_client():
             print("[INIT] ERROR: No available ports")
             return jsonify({'success': False, 'error': 'No available ports'}), 500
         
-        # Update global server settings if provided
-        if server_ip:
-            import client as ClientModule
-            ClientModule.CENTRAL_HOST = server_ip
-        if server_port:
-            import client as ClientModule
-            ClientModule.CENTRAL_PORT = server_port
-        
         # Use username as hostname for consistency
         hostname = username
         display_name = user.get('display_name', username)
         repo = user.get('settings', {}).get('default_repo', f'repo_{username}')
         
-        print(f"[INIT] Creating client: hostname={hostname}, port={port}, repo={repo}")
+        print(f"[INIT] Creating client: hostname={hostname}, port={port}, repo={repo}, server={server_ip}:{server_port}")
         
         with clients_lock:
             # Close existing client for this user if it exists
@@ -173,8 +165,17 @@ def init_client():
             
             # Create new client instance for this user
             try:
-                client_instances[username] = Client(hostname, port, repo, display_name)
+                # Pass server_ip and server_port to Client constructor
+                client_instances[username] = Client(
+                    hostname, 
+                    port, 
+                    repo, 
+                    display_name,
+                    server_host=server_ip,
+                    server_port=server_port
+                )
                 print(f"[INIT] SUCCESS: Created client instance for '{username}' on port {port}")
+                print(f"[INIT] Connected to server at {server_ip}:{server_port}")
                 print(f"[INIT] Active clients: {list(client_instances.keys())}")
             except Exception as client_error:
                 print(f"[INIT] ERROR: Failed to create Client instance: {client_error}")
@@ -189,7 +190,9 @@ def init_client():
                 'hostname': hostname,
                 'display_name': display_name,
                 'port': port,
-                'repo': repo
+                'repo': repo,
+                'server_host': server_ip,
+                'server_port': server_port
             }
         })
     except Exception as e:
@@ -595,6 +598,61 @@ def scan_directory():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/client/logout', methods=['POST'])
+def logout():
+    """Logout and disconnect client from network"""
+    try:
+        # Extract username from token
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({
+                'success': False,
+                'error': 'Authentication required'
+            }), 401
+        
+        token = auth_header.split(' ')[1]
+        try:
+            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=['HS256'])
+            username = payload.get('username')
+            print(f"[LOGOUT] Received logout request from '{username}'")
+        except jwt.ExpiredSignatureError:
+            return jsonify({'success': False, 'error': 'Token expired'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'success': False, 'error': 'Invalid token'}), 401
+        
+        with clients_lock:
+            if username in client_instances:
+                client = client_instances[username]
+                print(f"[LOGOUT] Disconnecting client '{username}'")
+                
+                # Unregister from central server and close connection
+                try:
+                    client.close()
+                    print(f"[LOGOUT] Client '{username}' unregistered from server")
+                except Exception as e:
+                    print(f"[LOGOUT] Error closing client: {e}")
+                
+                # Remove from active instances
+                del client_instances[username]
+                print(f"[LOGOUT] Removed '{username}' from active instances")
+                
+                return jsonify({
+                    'success': True,
+                    'message': f'Successfully disconnected from network'
+                })
+            else:
+                print(f"[LOGOUT] Client '{username}' not found in active instances. Available: {list(client_instances.keys())}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Client not found'
+                }), 404
+    except Exception as e:
+        print(f"[ERROR] Logout failed: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/api/health', methods=['GET'])
 def health():
     """Health check"""
@@ -640,5 +698,6 @@ if __name__ == '__main__':
     print("  POST /api/client/register - Register new user")
     print("  POST /api/client/login - Login existing user")
     print("  POST /api/client/init - Initialize client session")
+    print("  POST /api/client/logout - Logout and disconnect from network")
     print("  GET /api/health - Health check")
     app.run(host=CLIENT_API_HOST, port=CLIENT_API_PORT, debug=True, threaded=True)

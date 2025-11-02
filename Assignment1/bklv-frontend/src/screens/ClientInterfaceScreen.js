@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import config, { API_CONFIG } from '../config';
+import config from '../config';
 import { DashboardLayout, DashboardHeader, ContentCard } from '../layouts';
 import { Modal, NotificationModal, ViewToggle, EmptyState, Button } from '../components/common';
 import {
@@ -17,14 +17,15 @@ import {
 import { useNotification } from '../hooks/useNotification';
 import { formatTimestamp, formatFileSize } from '../utils/formatters';
 
-const CLIENT_API_BASE = API_CONFIG.clientBaseUrl + '/api/client';
-
 function ClientInterfaceScreen({ onBack }) {
   // Authentication states
   const [authMode, setAuthMode] = useState('login');
   const [authenticated, setAuthenticated] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [token, setToken] = useState(null);
+  
+  // API configuration based on user input
+  const [apiBaseUrl, setApiBaseUrl] = useState('http://localhost:5501/api/client');
   
   // Client states
   const [initialized, setInitialized] = useState(false);
@@ -79,8 +80,15 @@ function ClientInterfaceScreen({ onBack }) {
     setLoading(true);
     
     try {
+      // Construct API URL based on user's server input
+      const serverHost = authForm.server_ip;
+      const clientApiPort = 5501;
+      const dynamicApiBase = `http://${serverHost}:${clientApiPort}/api/client`;
+      
+      console.log(`[Auth] Connecting to: ${dynamicApiBase}`);
+      
       const endpoint = authMode === 'login' ? '/login' : '/register';
-      const response = await fetch(`${CLIENT_API_BASE}${endpoint}`, {
+      const response = await fetch(`${dynamicApiBase}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -93,13 +101,17 @@ function ClientInterfaceScreen({ onBack }) {
       const data = await response.json();
       
       if (data.success) {
+        // Store the API base URL for future requests
+        setApiBaseUrl(dynamicApiBase);
+        console.log(`[Auth] API base URL set to: ${dynamicApiBase}`);
+        
         setToken(data.token);
         setCurrentUser(data.user);
         setAuthenticated(true);
         setShowAuthModal(false);
         showNotification('success', 'Success', `${authMode === 'login' ? 'Logged in' : 'Registered'} successfully!`);
         // Pass token explicitly to avoid race condition
-        await initializeClient(data.user.username, data.token);
+        await initializeClient(data.user.username, data.token, dynamicApiBase);
       } else {
         showNotification('error', 'Authentication Failed', data.error);
       }
@@ -111,9 +123,9 @@ function ClientInterfaceScreen({ onBack }) {
   };
 
   // Initialize client session
-  const initializeClient = async (username, userToken) => {
+  const initializeClient = async (username, userToken, dynamicApiBase) => {
     try {
-      const response = await fetch(`${CLIENT_API_BASE}/init`, {
+      const response = await fetch(`${dynamicApiBase}/init`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -153,7 +165,7 @@ function ClientInterfaceScreen({ onBack }) {
   const fetchLocalFiles = async (authToken) => {
     const useToken = authToken || token;
     try {
-      const response = await fetch(`${CLIENT_API_BASE}/local-files`, {
+      const response = await fetch(`${apiBaseUrl}/local-files`, {
         headers: {
           'Authorization': `Bearer ${useToken}`
         }
@@ -170,7 +182,7 @@ function ClientInterfaceScreen({ onBack }) {
   const fetchPublishedFiles = async (authToken) => {
     const useToken = authToken || token;
     try {
-      const response = await fetch(`${CLIENT_API_BASE}/published-files`, {
+      const response = await fetch(`${apiBaseUrl}/published-files`, {
         headers: {
           'Authorization': `Bearer ${useToken}`
         }
@@ -187,7 +199,7 @@ function ClientInterfaceScreen({ onBack }) {
   const fetchNetworkFiles = async (authToken) => {
     const useToken = authToken || token;
     try {
-      const response = await fetch(`${CLIENT_API_BASE}/network-files`, {
+      const response = await fetch(`${apiBaseUrl}/network-files`, {
         headers: {
           'Authorization': `Bearer ${useToken}`
         }
@@ -227,7 +239,7 @@ function ClientInterfaceScreen({ onBack }) {
   const checkUploadDuplicates = async (file) => {
     try {
       // Check network duplicates
-      const networkResponse = await fetch(`${CLIENT_API_BASE}/check-duplicate`, {
+      const networkResponse = await fetch(`${apiBaseUrl}/check-duplicate`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -246,7 +258,7 @@ function ClientInterfaceScreen({ onBack }) {
       }
       
       // Check local duplicates
-      const localResponse = await fetch(`${CLIENT_API_BASE}/check-local-duplicate`, {
+      const localResponse = await fetch(`${apiBaseUrl}/check-local-duplicate`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -269,7 +281,7 @@ function ClientInterfaceScreen({ onBack }) {
   // Check for local duplicates when fetching a file
   const checkFetchDuplicates = async (fname) => {
     try {
-      const response = await fetch(`${CLIENT_API_BASE}/check-local-duplicate`, {
+      const response = await fetch(`${apiBaseUrl}/check-local-duplicate`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -304,7 +316,7 @@ function ClientInterfaceScreen({ onBack }) {
       
       showNotification('info', 'Uploading', `Uploading ${uploadForm.selectedFile.name}...`);
       
-      const response = await fetch(`${CLIENT_API_BASE}/upload`, {
+      const response = await fetch(`${apiBaseUrl}/upload`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -336,7 +348,7 @@ function ClientInterfaceScreen({ onBack }) {
     try {
       showNotification('info', 'Publishing', `Publishing ${file.name}...`);
       
-      const response = await fetch(`${CLIENT_API_BASE}/publish`, {
+      const response = await fetch(`${apiBaseUrl}/publish`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -366,7 +378,7 @@ function ClientInterfaceScreen({ onBack }) {
   // Unpublish file
   const handleUnpublish = async (fname) => {
     try {
-      const response = await fetch(`${CLIENT_API_BASE}/unpublish`, {
+      const response = await fetch(`${apiBaseUrl}/unpublish`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -409,7 +421,7 @@ function ClientInterfaceScreen({ onBack }) {
       if (fetchForm.fetchToBackend) {
         showNotification('info', 'Downloading', `Downloading ${selectedNetworkFile.name} to backend...`);
         
-        const response = await fetch(`${CLIENT_API_BASE}/fetch`, {
+        const response = await fetch(`${apiBaseUrl}/fetch`, {
           method: 'POST',
           headers: { 
             'Content-Type': 'application/json',
@@ -435,7 +447,7 @@ function ClientInterfaceScreen({ onBack }) {
       } else {
         showNotification('info', 'Downloading', `Fetching ${selectedNetworkFile.name} to browser...`);
         
-        const fetchResponse = await fetch(`${CLIENT_API_BASE}/fetch`, {
+        const fetchResponse = await fetch(`${apiBaseUrl}/fetch`, {
           method: 'POST',
           headers: { 
             'Content-Type': 'application/json',
@@ -452,7 +464,7 @@ function ClientInterfaceScreen({ onBack }) {
         if (fetchData.success) {
           setTimeout(async () => {
             // Download file with authentication
-            const downloadResponse = await fetch(`${CLIENT_API_BASE}/download/${encodeURIComponent(selectedNetworkFile.name)}`, {
+            const downloadResponse = await fetch(`${apiBaseUrl}/download/${encodeURIComponent(selectedNetworkFile.name)}`, {
               headers: {
                 'Authorization': `Bearer ${token}`
               }
@@ -481,6 +493,43 @@ function ClientInterfaceScreen({ onBack }) {
       }
     } catch (error) {
       showNotification('error', 'Error', 'Failed to fetch: ' + error.message);
+    }
+  };
+
+  // Handle disconnect/logout
+  const handleDisconnect = async () => {
+    try {
+      showNotification('info', 'Disconnecting', 'Logging out from P2P network...');
+      
+      const response = await fetch(`${apiBaseUrl}/logout`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        showNotification('success', 'Disconnected', 'Successfully logged out from network');
+        // Wait a moment for notification to show, then go back
+        setTimeout(() => {
+          onBack();
+        }, 1000);
+      } else {
+        showNotification('warning', 'Disconnect Issue', data.error || 'Could not disconnect properly');
+        // Still go back even if disconnect failed
+        setTimeout(() => {
+          onBack();
+        }, 1500);
+      }
+    } catch (error) {
+      console.error('Disconnect error:', error);
+      showNotification('warning', 'Disconnect Issue', 'Connection error during logout');
+      // Still go back even if request failed
+      setTimeout(() => {
+        onBack();
+      }, 1500);
     }
   };
 
@@ -522,7 +571,7 @@ function ClientInterfaceScreen({ onBack }) {
       <DashboardHeader
         title={clientInfo?.display_name || 'Client Interface'}
         subtitle={`@${clientInfo?.username} • Port ${clientInfo?.port}`}
-        onBackClick={onBack}
+        onBackClick={handleDisconnect}
         backButtonText="Disconnect"
       />
 

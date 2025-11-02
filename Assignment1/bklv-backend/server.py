@@ -10,7 +10,9 @@ from config import (
     CLIENT_INACTIVE_TIMEOUT
 )
 
-HOST = SERVER_HOST if SERVER_HOST != '127.0.0.1' else ''
+# Bind to all interfaces if SERVER_HOST is 0.0.0.0, otherwise use specified host
+# Empty string '' means bind to all available interfaces
+HOST = '' if SERVER_HOST in ('0.0.0.0', '127.0.0.1') else SERVER_HOST
 PORT = SERVER_PORT
 
 registry_lock = threading.Lock()
@@ -227,8 +229,21 @@ def main():
     s.bind((HOST, PORT))
     s.listen(10)
     threading.Thread(target=cleanup_thread, daemon=True).start()
+    
+    # Get actual IP address for display
+    import socket as sock
+    hostname = sock.gethostname()
+    try:
+        local_ip = sock.gethostbyname(hostname)
+    except:
+        local_ip = 'Unable to determine'
+    
     print(f"=== P2P File Sharing Server Started ===")
     print(f"Server running on {HOST or '0.0.0.0'}:{PORT}")
+    print(f"Local IP address: {local_ip}")
+    print(f"Hostname: {hostname}")
+    print(f"\nFor LAN access, clients should connect to: {local_ip}:{PORT}")
+    print(f"For localhost access, clients can connect to: 127.0.0.1:{PORT}")
     print(f"Waiting for client connections...")
     try:
         while True:
