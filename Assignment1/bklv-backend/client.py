@@ -164,13 +164,33 @@ class PeerServer(threading.Thread):
         self.listen_port = listen_port
         self.client_ref = client_ref  # Reference to parent Client
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Allow port reuse
         self.sock.bind(('', self.listen_port))
         self.sock.listen(5)
+        self.sock.settimeout(1.0)  # Set timeout so accept() doesn't block forever
 
     def run(self):
-        while True:
-            conn, addr = self.sock.accept()
-            threading.Thread(target=self.handle_peer, args=(conn, addr), daemon=True).start()
+        print(f"[PEER] Server started on port {self.listen_port}")
+        while self.client_ref.running:
+            try:
+                conn, addr = self.sock.accept()
+                threading.Thread(target=self.handle_peer, args=(conn, addr), daemon=True).start()
+            except socket.timeout:
+                # Timeout allows us to check running flag periodically
+                continue
+            except Exception as e:
+                if self.client_ref.running:  # Only log if we're supposed to be running
+                    print(f"[PEER] Accept error: {e}")
+                break
+        print(f"[PEER] Server stopped on port {self.listen_port}")
+    
+    def stop(self):
+        """Stop the peer server"""
+        print(f"[PEER] Stopping peer server on port {self.listen_port}")
+        try:
+            self.sock.close()
+        except Exception as e:
+            print(f"[PEER] Error closing socket: {e}")
 
     def handle_peer(self, conn, addr):
         try:
@@ -207,18 +227,47 @@ class PeerServer(threading.Thread):
                 try:
                     size = os.path.getsize(fpath)
                     conn.sendall(f"LENGTH {size}\n".encode())
-                    print(f"[PEER] Sending file '{fname}' ({size} bytes) from: {fpath}")
+                    print(f"[PEER] Sending file '{fname}' ({size:,} bytes) from: {fpath}")
+                    
+                    # Use larger chunks for better performance with large files
+                    # 1MB chunks for files > 100MB, otherwise 256KB
+                    chunk_size = 1024*1024 if size > 100*1024*1024 else 256*1024
+                    
+                    bytes_sent = 0
+                    last_progress_report = 0
+                    
                     with open(fpath, 'rb') as f:
                         while True:
-                            chunk = f.read(8192)
+                            # Check if client is shutting down
+                            if not self.client_ref.running:
+                                print(f"[PEER] Transfer of '{fname}' interrupted - client shutting down")
+                                conn.sendall(b"ERROR interrupted\n")
+                                return
+                            
+                            chunk = f.read(chunk_size)
                             if not chunk:
                                 break
                             conn.sendall(chunk)
+                            bytes_sent += len(chunk)
+                            
+                            # Progress reporting for large files (every 10%)
+                            if size > 10*1024*1024:
+                                progress = (bytes_sent / size) * 100
+                                if int(progress) >= last_progress_report + 10:
+                                    last_progress_report = int(progress)
+                                    print(f"[PEER] Sent {progress:.0f}% of '{fname}'")
+                    
+                    print(f"[PEER] Completed sending '{fname}' ({bytes_sent:,} bytes)")
+                    
                 except Exception as e:
                     conn.sendall(b"ERROR readerror\n")
                     print(f"[PEER] Error reading file '{fname}': {e}")
+                    import traceback
+                    traceback.print_exc()
         except Exception as e:
             print(f"[PEER] Connection error: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             conn.close()
 
@@ -820,109 +869,221 @@ class Client:
         threading.Thread(target=self.download_from_peer, args=(picked['ip'], picked['port'], fname, save_path), daemon=True).start()
         return picked
 
-    def download_from_peer(self, ip, port, fname, save_path=None):
+    def download_from_peer(self, ip, port, fname, save_path=None, progress_callback=None, fetch_id=None):
         """
-        Download a file from a peer with file transfer state tracking
+        Download a file from a peer with chunked streaming and progress tracking
+        This is a direct P2P transfer - no server intervention for file bits
         
         Args:
             ip: Peer IP address
             port: Peer port
             fname: Filename to download
             save_path: Optional custom save path. If None, saves to repo directory
+            progress_callback: Optional callback(downloaded_bytes, total_bytes, speed_bps)
+            fetch_id: Optional fetch ID to use existing FetchSession from fetch_manager
+        
+        Returns:
+            Path to downloaded file or None on failure
         """
         # Mark as busy for large file transfers
         if self.adaptive_heartbeat:
             self.adaptive_heartbeat.start_file_transfer()
         
         try:
+            # Import fetch manager (P2P-focused, no hashing)
+            try:
+                from optimizations.fetch_manager import FetchSession
+                use_fetch_manager = True
+            except ImportError:
+                print("[WARN] Fetch manager not available, using legacy method")
+                use_fetch_manager = False
+            
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(10)
+            s.settimeout(30)  # Increased timeout for large files
             s.connect((ip, port))
             s.sendall(f"GET {fname}\n".encode())
+            
+            # Read header
             buf = b''
-            while True:
+            while b'\n' not in buf:
                 chunk = s.recv(4096)
                 if not chunk:
                     s.close()
-                    print("[ERROR] Connection closed unexpectedly")
+                    print("[ERROR] Connection closed before receiving header")
                     if self.adaptive_heartbeat:
                         self.adaptive_heartbeat.end_file_transfer()
-                    return
+                    return None
                 buf += chunk
-                if b'\n' in buf:
-                    line, rest = buf.split(b'\n', 1)
-                    header = line.decode().strip().split(' ',1)
-                    if header[0] == 'LENGTH':
-                        length = int(header[1])
-                        data = rest
-                        while len(data) < length:
-                            more = s.recv(8192)
-                            if not more:
-                                break
-                            data += more
-                        
-                        # Determine save location
-                        if save_path:
-                            # Use custom save path
-                            outpath = os.path.abspath(os.path.expanduser(save_path))
-                            # If save_path is a directory, append filename
-                            if os.path.isdir(outpath):
-                                outpath = os.path.join(outpath, fname)
-                            os.makedirs(os.path.dirname(outpath), exist_ok=True)
-                        else:
-                            # Default to repo directory
-                            outpath = os.path.join(self.repo_dir, fname)
-                        
-                        # Write file
-                        with open(outpath, 'wb') as f:
-                            f.write(data[:length])
-                        
-                        # Get file metadata with cross-platform support
-                        try:
-                            meta_dict = get_file_metadata_crossplatform(outpath)
-                        except Exception as e:
-                            print(f"[WARN] Failed to read metadata, using fallback: {e}")
-                            stat = os.stat(outpath)
-                            meta_dict = {
-                                'size': stat.st_size,
-                                'modified': stat.st_mtime,
-                                'created': stat.st_mtime,
-                                'path': outpath
-                            }
-                        
-                        # Update metadata (only as local file, NOT auto-published)
-                        metadata = FileMetadata(
-                            name=fname,
-                            size=meta_dict['size'],
-                            modified=meta_dict['modified'],
-                            created=meta_dict['created'],
-                            path=outpath,
-                            is_published=False,  # Downloaded files are NOT auto-published
-                            added_at=time.time()  # Downloaded = added to local tracking
-                        )
-                        self.local_files[fname] = metadata
-                        
-                        # Save metadata to JSON
-                        self._save_file_metadata(fname)
-                        
-                        print(f"[SUCCESS] Downloaded '{fname}' -> '{outpath}' ({meta_dict['size']} bytes)")
-                        print(f"[INFO] File saved as local only. Use 'publish' command to share with network.")
-                        s.close()
-                        
-                        # End transfer state
-                        if self.adaptive_heartbeat:
-                            self.adaptive_heartbeat.end_file_transfer()
-                        return
+            
+            line, rest = buf.split(b'\n', 1)
+            header = line.decode().strip().split(' ', 1)
+            
+            if header[0] != 'LENGTH':
+                print(f"[ERROR] Peer error: {line.decode().strip()}")
+                s.close()
+                if self.adaptive_heartbeat:
+                    self.adaptive_heartbeat.end_file_transfer()
+                return None
+            
+            total_size = int(header[1])
+            
+            # Determine save location
+            if save_path:
+                outpath = os.path.abspath(os.path.expanduser(save_path))
+                if os.path.isdir(outpath):
+                    outpath = os.path.join(outpath, fname)
+                os.makedirs(os.path.dirname(outpath), exist_ok=True)
+            else:
+                outpath = os.path.join(self.repo_dir, fname)
+            
+            print(f"[FETCH] Starting P2P download: {fname} ({total_size:,} bytes) from {ip}")
+            
+            # Use fetch session for large files (> 10MB) or if fetch_id provided
+            fetch_session = None
+            if use_fetch_manager and (total_size > 10*1024*1024 or fetch_id):
+                if fetch_id:
+                    # Use existing session from fetch_manager
+                    from optimizations.fetch_manager import fetch_manager
+                    fetch_session = fetch_manager.get_session(fetch_id)
+                    if fetch_session:
+                        print(f"[FETCH] Using managed session: {fetch_id}")
+                        fetch_session.start()
                     else:
-                        print("[ERROR] Peer error:", line.decode().strip())
-                        s.close()
-                        if self.adaptive_heartbeat:
-                            self.adaptive_heartbeat.end_file_transfer()
-                        return
-        except Exception as e:
-            print(f"[ERROR] Download failed: {e}")
+                        print(f"[WARN] Fetch session {fetch_id} not found, creating new one")
+                        fetch_session = FetchSession(
+                            file_name=fname,
+                            total_size=total_size,
+                            save_path=outpath,
+                            peer_hostname="",
+                            peer_ip=ip,
+                            chunk_size=256*1024
+                        )
+                        fetch_session.start()
+                else:
+                    # Create standalone session
+                    fetch_session = FetchSession(
+                        file_name=fname,
+                        total_size=total_size,
+                        save_path=outpath,
+                        peer_hostname="",
+                        peer_ip=ip,
+                        chunk_size=256*1024
+                    )
+                    fetch_session.start()
+                
+                # Download in chunks (direct P2P transfer)
+                data = rest
+                chunk_size = 256*1024  # 256KB network chunks
+                
+                while len(data) < total_size:
+                    chunk = s.recv(min(chunk_size, total_size - len(data)))
+                    if not chunk:
+                        break
+                    
+                    # Write chunk
+                    fetch_session.write_chunk(chunk)
+                    data += chunk
+                    
+                    # Report progress
+                    if progress_callback:
+                        progress = fetch_session.get_progress()
+                        progress_callback(
+                            progress['downloaded_size'],
+                            total_size,
+                            progress['speed_bps']
+                        )
+                    
+                    # Progress display (every 5%)
+                    percent = (len(data) / total_size) * 100
+                    if int(percent) % 5 == 0 and len(data) > 0:
+                        speed_mbps = fetch_session.progress.speed_bps / (1024*1024)
+                        print(f"[FETCH] Progress: {percent:.1f}% - {speed_mbps:.2f} MB/s")
+                
+                # Complete download - verify size only (P2P, no hashing)
+                if fetch_session.complete():
+                    print(f"[SUCCESS] P2P fetch complete: {fname}")
+                    print(f"[VERIFY] Size verified: {total_size:,} bytes")
+                else:
+                    print(f"[ERROR] Fetch failed: {fetch_session.progress.error_message}")
+                    s.close()
+                    if self.adaptive_heartbeat:
+                        self.adaptive_heartbeat.end_file_transfer()
+                    return None
+                
+            if not fetch_session:
+                # Legacy method for small files
+                print(f"[FETCH] Using legacy method for small file")
+                data = rest
+                chunk_size = 256*1024
+                bytes_received = len(data)
+                
+                with open(outpath, 'wb') as f:
+                    if data:
+                        f.write(data)
+                    
+                    while bytes_received < total_size:
+                        chunk = s.recv(min(chunk_size, total_size - bytes_received))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        bytes_received += len(chunk)
+                        
+                        if progress_callback:
+                            progress_callback(bytes_received, total_size, 0)
+                
+                if bytes_received != total_size:
+                    print(f"[ERROR] Size mismatch: expected {total_size}, got {bytes_received}")
+                    s.close()
+                    if self.adaptive_heartbeat:
+                        self.adaptive_heartbeat.end_file_transfer()
+                    return None
+            
+            s.close()
+            
+            # Get file metadata with cross-platform support
+            try:
+                meta_dict = get_file_metadata_crossplatform(outpath)
+            except Exception as e:
+                print(f"[WARN] Failed to read metadata, using fallback: {e}")
+                stat = os.stat(outpath)
+                meta_dict = {
+                    'size': stat.st_size,
+                    'modified': stat.st_mtime,
+                    'created': stat.st_mtime,
+                    'path': outpath
+                }
+            
+            # Update metadata (only as local file, NOT auto-published)
+            metadata = FileMetadata(
+                name=fname,
+                size=meta_dict['size'],
+                modified=meta_dict['modified'],
+                created=meta_dict['created'],
+                path=outpath,
+                is_published=False,
+                added_at=time.time()
+            )
+            self.local_files[fname] = metadata
+            
+            # Save metadata to JSON
+            self._save_file_metadata(fname)
+            
+            print(f"[SUCCESS] Downloaded '{fname}' -> '{outpath}' ({meta_dict['size']:,} bytes)")
+            print(f"[INFO] File saved as local only. Use 'publish' command to share with network.")
+            
+            # End transfer state
             if self.adaptive_heartbeat:
                 self.adaptive_heartbeat.end_file_transfer()
+            
+            return outpath
+            
+        except Exception as e:
+            print(f"[ERROR] P2P fetch failed: {e}")
+            import traceback
+            traceback.print_exc()
+            if self.adaptive_heartbeat:
+                self.adaptive_heartbeat.end_file_transfer()
+            return None
 
     def discover(self, hostname):
         with self.central_lock:
@@ -996,21 +1157,32 @@ class Client:
     
     def close(self):
         """Close client and cleanup resources"""
-        self.running = False  # Stop heartbeat thread
+        print(f"[CLIENT] Closing client '{self.hostname}'...")
+        self.running = False  # Stop heartbeat thread and peer server
+        
+        # Stop peer server first (will exit its loop when running=False)
+        try:
+            if self.peer_server and hasattr(self.peer_server, 'stop'):
+                self.peer_server.stop()
+                print("[CLIENT] Peer server stopped")
+        except Exception as e:
+            print(f"[CLIENT] Error stopping peer server: {e}")
+        
+        # Unregister from central server
         try:
             self.unregister()
-        except:
-            pass
+            print("[CLIENT] Unregistered from central server")
+        except Exception as e:
+            print(f"[CLIENT] Error unregistering: {e}")
+        
+        # Close central server connection
         try:
             self.central.close()
-        except:
-            pass
-        try:
-            # Stop peer server if it has a stop method
-            if hasattr(self.peer_server, 'stop'):
-                self.peer_server.stop()
-        except:
-            pass
+            print("[CLIENT] Central server connection closed")
+        except Exception as e:
+            print(f"[CLIENT] Error closing central connection: {e}")
+        
+        print(f"[CLIENT] Client '{self.hostname}' closed successfully")
 
 def cli_loop(client):
     prompt = f"{client.display_name}> "

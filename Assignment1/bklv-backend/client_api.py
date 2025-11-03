@@ -14,11 +14,13 @@ import sys
 from datetime import datetime
 import time
 import jwt
+import uuid
 
 # Import the Client class and config
 from client import Client, send_json, recv_json, CENTRAL_HOST, CENTRAL_PORT
 from config import CLIENT_API_HOST, CLIENT_API_PORT, JWT_SECRET_KEY, SESSION_TIMEOUT
 from user_db import UserDB, find_available_port
+from optimizations.fetch_manager import fetch_manager
 
 app = Flask(__name__)
 CORS(app)
@@ -596,30 +598,120 @@ def publish_file():
 
 @app.route('/api/client/fetch', methods=['POST'])
 def fetch_file():
-    """Fetch a file from the network with optional save location"""
+    """Fetch a file from the network with progress tracking (P2P transfer)"""
     try:
         client = get_client()
         data = request.json
         fname = data.get('fname')
-        save_path = data.get('save_path')  # Optional: where to save the file
+        save_path = data.get('save_path')
         
         if not fname:
             return jsonify({'success': False, 'error': 'fname required'}), 400
         
-        # Run fetch in a separate thread
+        # Generate unique fetch ID
+        fetch_id = str(uuid.uuid4())
+        
+        # Get file info from network (server provides metadata only)
+        with client.central_lock:
+            send_json(client.central, {"action": "REQUEST", "data": {"fname": fname}})
+            response = recv_json(client.central)
+        
+        if not response or response.get('status') != 'FOUND':
+            return jsonify({'success': False, 'error': 'File not found on network'}), 404
+        
+        hosts = response.get('hosts', [])
+        if not hosts:
+            return jsonify({'success': False, 'error': 'No hosts available'}), 404
+        
+        picked = hosts[0]
+        total_size = picked.get('size', 0)
+        peer_hostname = picked.get('hostname', '')
+        peer_ip = picked['ip']
+        
+        # Determine save location
+        if save_path:
+            outpath = os.path.abspath(os.path.expanduser(save_path))
+            if os.path.isdir(outpath):
+                outpath = os.path.join(outpath, fname)
+        else:
+            outpath = os.path.join(client.repo_dir, fname)
+        
+        # Create fetch session (P2P - no server file transfer)
+        session = fetch_manager.create_session(
+            fetch_id=fetch_id,
+            file_name=fname,
+            total_size=total_size,
+            save_path=outpath,
+            peer_hostname=peer_hostname,
+            peer_ip=peer_ip
+        )
+        
+        # Download in background thread (direct P2P connection)
         def fetch_task():
-            client.request(fname, save_path)
+            try:
+                # Pass fetch_id so download_from_peer uses the managed session
+                result = client.download_from_peer(
+                    peer_ip,
+                    picked['port'],
+                    fname,
+                    save_path,
+                    fetch_id=fetch_id  # Use existing session from fetch_manager
+                )
+                
+                if not result:
+                    session.fail("P2P fetch failed")
+                    
+            except Exception as e:
+                session.fail(str(e))
         
         thread = threading.Thread(target=fetch_task, daemon=True)
         thread.start()
         
         return jsonify({
-            'success': True, 
-            'message': 'Fetching file...',
-            'save_path': save_path or client.repo_dir
+            'success': True,
+            'message': 'P2P fetch started',
+            'fetch_id': fetch_id,
+            'file_name': fname,
+            'total_size': total_size,
+            'save_path': outpath,
+            'peer_hostname': peer_hostname,
+            'peer_ip': peer_ip
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/client/fetch-progress/<fetch_id>', methods=['GET'])
+def get_fetch_progress(fetch_id):
+    """Get progress for a specific P2P fetch"""
+    try:
+        session = fetch_manager.get_session(fetch_id)
+        if not session:
+            return jsonify({'success': False, 'error': 'Fetch not found'}), 404
+        
+        progress = session.get_progress()
+        return jsonify({
+            'success': True,
+            'progress': progress
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/client/fetches', methods=['GET'])
+def get_all_fetches():
+    """Get progress for all active P2P fetches"""
+    try:
+        all_progress = fetch_manager.get_all_progress()
+        return jsonify({
+            'success': True,
+            'fetches': all_progress
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/client/download/<fname>', methods=['GET'])
 def download_file(fname):

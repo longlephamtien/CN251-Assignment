@@ -3,3 +3,16 @@
 .client-interface-screen .add-file-button {
   margin-right: 0.5rem;
 }
+
+/* Downloads Container */
+.downloads-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+/* Active Downloads Section */
+.main-content > .downloads-section {
+  margin-bottom: 24px;
+}
