@@ -26,16 +26,41 @@ CORS(app)
 # Initialize user database
 user_db = UserDB()
 
-# Global client instance
-client_instance = None
-client_lock = threading.Lock()
+# Session-based client instances - stores multiple clients by username
+client_instances = {}
+clients_lock = threading.Lock()
 
-def get_client():
-    """Get the active client instance"""
-    global client_instance
-    if client_instance is None:
-        raise Exception("Client not initialized. Call /api/client/init first.")
-    return client_instance
+def get_client(username=None):
+    """Get the client instance for a specific user"""
+    if username is None:
+        # Try to extract username from Authorization header
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+            try:
+                payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=['HS256'])
+                username = payload.get('username')
+                print(f"[DEBUG] Extracted username '{username}' from token")
+            except jwt.ExpiredSignatureError:
+                print("[ERROR] Token has expired")
+                raise Exception("Token has expired. Please login again.")
+            except jwt.InvalidTokenError as e:
+                print(f"[ERROR] Invalid token: {e}")
+                raise Exception("Invalid token. Please login again.")
+            except Exception as e:
+                print(f"[ERROR] Token decode error: {e}")
+                raise Exception("Invalid or expired token")
+        
+        if username is None:
+            print("[ERROR] No username in token or Authorization header missing")
+            raise Exception("Username not provided and token not found")
+    
+    with clients_lock:
+        if username not in client_instances:
+            print(f"[ERROR] No client instance for user '{username}'. Available: {list(client_instances.keys())}")
+            raise Exception(f"Client not initialized for user '{username}'. Call /api/client/init first.")
+        print(f"[DEBUG] Found client instance for user '{username}'")
+        return client_instances[username]
 
 @app.route('/api/client/register', methods=['POST'])
 def register_user():
@@ -97,50 +122,66 @@ def login_user():
 @app.route('/api/client/init', methods=['POST'])
 def init_client():
     """Initialize a new client session for authenticated user"""
-    global client_instance
     
     data = request.json
     username = data.get('username')
     server_ip = data.get('server_ip', '127.0.0.1')
     server_port = data.get('server_port', 9000)
     
+    print(f"[INIT] Received init request for username: '{username}'")
+    
     if not username:
+        print("[INIT] ERROR: No username provided")
         return jsonify({'success': False, 'error': 'Username required'}), 400
     
     # Get user data
     user = user_db.get_user(username)
     if not user:
+        print(f"[INIT] ERROR: User '{username}' not found in database")
         return jsonify({'success': False, 'error': 'User not found'}), 404
     
     try:
         # Auto-assign port if needed
         port = find_available_port()
         if not port:
+            print("[INIT] ERROR: No available ports")
             return jsonify({'success': False, 'error': 'No available ports'}), 500
-        
-        # Update global server settings if provided
-        if server_ip:
-            import client as ClientModule
-            ClientModule.CENTRAL_HOST = server_ip
-        if server_port:
-            import client as ClientModule
-            ClientModule.CENTRAL_PORT = server_port
         
         # Use username as hostname for consistency
         hostname = username
         display_name = user.get('display_name', username)
         repo = user.get('settings', {}).get('default_repo', f'repo_{username}')
         
-        with client_lock:
-            if client_instance:
-                # Close existing client properly
+        print(f"[INIT] Creating client: hostname={hostname}, port={port}, repo={repo}, server={server_ip}:{server_port}")
+        
+        with clients_lock:
+            # Close existing client for this user if it exists
+            if username in client_instances:
                 try:
-                    client_instance.close()
-                except:
-                    pass
-                client_instance = None
+                    client_instances[username].close()
+                    print(f"[INIT] Closed previous client instance for '{username}'")
+                except Exception as e:
+                    print(f"[INIT] WARN: Error closing previous client for '{username}': {e}")
             
-            client_instance = Client(hostname, port, repo, display_name)
+            # Create new client instance for this user
+            try:
+                # Pass server_ip and server_port to Client constructor
+                client_instances[username] = Client(
+                    hostname, 
+                    port, 
+                    repo, 
+                    display_name,
+                    server_host=server_ip,
+                    server_port=server_port
+                )
+                print(f"[INIT] SUCCESS: Created client instance for '{username}' on port {port}")
+                print(f"[INIT] Connected to server at {server_ip}:{server_port}")
+                print(f"[INIT] Active clients: {list(client_instances.keys())}")
+            except Exception as client_error:
+                print(f"[INIT] ERROR: Failed to create Client instance: {client_error}")
+                import traceback
+                traceback.print_exc()
+                raise
         
         return jsonify({
             'success': True,
@@ -149,17 +190,20 @@ def init_client():
                 'hostname': hostname,
                 'display_name': display_name,
                 'port': port,
-                'repo': repo
+                'repo': repo,
+                'server_host': server_ip,
+                'server_port': server_port
             }
         })
     except Exception as e:
+        print(f"[ERROR] Failed to initialize client for '{username}': {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/client/status', methods=['GET'])
 def get_client_status():
     """Get client status"""
     try:
-        client = get_client()
+        client = get_client()  # Will extract username from token
         return jsonify({
             'success': True,
             'client': {
@@ -176,15 +220,18 @@ def get_client_status():
 def get_local_files():
     """Get list of local tracked files"""
     try:
-        client = get_client()
+        client = get_client()  # Will extract username from token
         files = []
         for fname, meta in client.local_files.items():
             files.append({
                 'name': meta.name,
                 'size': meta.size,
                 'modified': meta.modified,
+                'created': meta.created,
                 'path': meta.path,
-                'is_published': meta.is_published
+                'is_published': meta.is_published,
+                'added_at': meta.added_at,
+                'published_at': meta.published_at
             })
         return jsonify({'success': True, 'files': files})
     except Exception as e:
@@ -194,13 +241,16 @@ def get_local_files():
 def get_published_files():
     """Get list of published files"""
     try:
-        client = get_client()
+        client = get_client()  # Will extract username from token
         files = []
         for fname, meta in client.published_files.items():
             files.append({
                 'name': meta.name,
                 'size': meta.size,
                 'modified': meta.modified,
+                'created': meta.created,
+                'path': meta.path,
+                'added_at': meta.added_at,
                 'published_at': meta.published_at
             })
         return jsonify({'success': True, 'files': files})
@@ -211,7 +261,7 @@ def get_published_files():
 def get_network_files():
     """Get all files available on the network"""
     try:
-        client = get_client()
+        client = get_client()  # Will extract username from token
         with client.central_lock:
             send_json(client.central, {"action": "LIST"})
             response = recv_json(client.central)
@@ -226,6 +276,7 @@ def get_network_files():
                         'name': fname,
                         'size': finfo.get('size', 0),
                         'modified': finfo.get('modified', 0),
+                        'created': finfo.get('created', finfo.get('modified', 0)),
                         'published_at': finfo.get('published_at', 0),
                         'owner_hostname': hostname,
                         'owner_name': info.get('display_name', hostname),
@@ -241,7 +292,7 @@ def get_network_files():
 
 @app.route('/api/client/add-file', methods=['POST'])
 def add_file():
-    """Add a file to local tracking"""
+    """Add a file to local tracking by path (no copying)"""
     try:
         client = get_client()
         data = request.json
@@ -250,111 +301,297 @@ def add_file():
         if not filepath:
             return jsonify({'success': False, 'error': 'filepath required'}), 400
         
-        success = client.add_local_file(filepath)
+        # Expand and validate path
+        filepath = os.path.abspath(os.path.expanduser(filepath))
+        
+        if not os.path.exists(filepath):
+            return jsonify({'success': False, 'error': f'File not found: {filepath}'}), 404
+        
+        if not os.path.isfile(filepath):
+            return jsonify({'success': False, 'error': f'Path is not a file: {filepath}'}), 400
+        
+        # Add file to tracking (metadata only, no copying)
+        success = client.add_local_file(filepath, auto_save_metadata=True)
+        
         if success:
-            return jsonify({'success': True, 'message': 'File added to tracking'})
+            fname = os.path.basename(filepath)
+            file_meta = client.local_files.get(fname)
+            return jsonify({
+                'success': True, 
+                'message': f'File "{fname}" tracked (reference to: {filepath})',
+                'file': {
+                    'name': fname,
+                    'size': file_meta.size,
+                    'created': file_meta.created,
+                    'modified': file_meta.modified,
+                    'path': filepath,
+                    'added_at': file_meta.added_at
+                }
+            })
         else:
             return jsonify({'success': False, 'error': 'Failed to add file'}), 400
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/client/check-duplicate', methods=['POST'])
+def check_duplicate():
+    """Check if a file with same metadata exists on network (for UI warnings)"""
+    try:
+        client = get_client()
+        data = request.json
+        fname = data.get('fname')
+        size = data.get('size')
+        modified = data.get('modified')
+        
+        if not fname or size is None:
+            return jsonify({'success': False, 'error': 'fname and size required'}), 400
+        
+        # Use current time if modified not provided
+        if modified is None:
+            modified = time.time()
+        
+        # Check for duplicates on network
+        duplicate_info = client._check_duplicate_on_network(fname, size, modified)
+        
+        return jsonify({
+            'success': True,
+            'has_exact_duplicate': duplicate_info['has_exact_duplicate'],
+            'has_partial_duplicate': duplicate_info['has_partial_duplicate'],
+            'exact_matches': duplicate_info['exact_matches'],
+            'partial_matches': duplicate_info['partial_matches']
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/client/check-local-duplicate', methods=['POST'])
+def check_local_duplicate():
+    """Check if a file with same name exists in local repository"""
+    try:
+        client = get_client()
+        data = request.json
+        fname = data.get('fname')
+        
+        if not fname:
+            return jsonify({'success': False, 'error': 'fname required'}), 400
+        
+        # Check if file exists locally
+        if fname in client.local_files:
+            local_meta = client.local_files[fname]
+            return jsonify({
+                'success': True,
+                'exists': True,
+                'local_file': {
+                    'name': local_meta.name,
+                    'size': local_meta.size,
+                    'modified': local_meta.modified,
+                    'is_published': local_meta.is_published
+                }
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'exists': False
+            })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/client/upload', methods=['POST'])
 def upload_file():
-    """Upload a file from browser to repo and optionally publish"""
+    """
+    Track a file from user's computer by storing its path (NO COPYING).
+    For browser uploads, we need to receive the file but can save it to a temp location
+    or the user needs to provide a path to an existing file on their system.
+    """
     try:
         client = get_client()
         
-        # Check if file is in request
-        if 'file' not in request.files:
-            return jsonify({'success': False, 'error': 'No file provided'}), 400
+        # Check if user provided a file path (preferred method)
+        file_path = request.form.get('file_path')
         
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'success': False, 'error': 'No file selected'}), 400
+        if file_path:
+            # User specified a file path on their system - just track it
+            file_path = os.path.abspath(os.path.expanduser(file_path))
+            
+            if not os.path.exists(file_path):
+                return jsonify({'success': False, 'error': f'File not found: {file_path}'}), 404
+            
+            if not os.path.isfile(file_path):
+                return jsonify({'success': False, 'error': f'Path is not a file: {file_path}'}), 400
+            
+            fname = os.path.basename(file_path)
+            
+            # Get file metadata from original location
+            from client import get_file_metadata_crossplatform, FileMetadata
+            try:
+                meta_dict = get_file_metadata_crossplatform(file_path)
+            except Exception as e:
+                print(f"[WARN] Failed to read metadata, using fallback: {e}")
+                stat = os.stat(file_path)
+                meta_dict = {
+                    'size': stat.st_size,
+                    'modified': stat.st_mtime,
+                    'created': stat.st_mtime,
+                    'path': file_path
+                }
+            
+            # Track metadata only - file stays at original location
+            metadata = FileMetadata(
+                name=fname,
+                size=meta_dict['size'],
+                modified=meta_dict['modified'],
+                created=meta_dict['created'],
+                path=file_path,  # Original path on user's computer
+                is_published=False,
+                added_at=time.time()  # When added to tracking
+            )
+            client.local_files[fname] = metadata
+            
+            # Save metadata to JSON file
+            client._save_file_metadata(fname)
+            
+            # Auto publish if requested
+            auto_publish = request.form.get('auto_publish', 'false').lower() == 'true'
+            if auto_publish:
+                def publish_task():
+                    client.publish(file_path, fname, overwrite=True, interactive=False)
+                threading.Thread(target=publish_task, daemon=True).start()
+                message = f'File "{fname}" tracked and publishing...'
+            else:
+                message = f'File "{fname}" tracked successfully (reference to: {file_path})'
+            
+            return jsonify({
+                'success': True, 
+                'message': message,
+                'file': {
+                    'name': fname,
+                    'size': meta_dict['size'],
+                    'path': file_path,
+                    'added_at': metadata.added_at
+                }
+            })
         
-        # Get optional parameters
-        auto_publish = request.form.get('auto_publish', 'false').lower() == 'true'
-        
-        # Save file to repo directory
-        fname = os.path.basename(file.filename)  # Sanitize filename
-        dest_path = os.path.join(client.repo_dir, fname)
-        
-        # Check if file exists
-        if os.path.exists(dest_path):
-            return jsonify({'success': False, 'error': f'File "{fname}" already exists in repository'}), 400
-        
-        # Save the uploaded file
-        file.save(dest_path)
-        
-        # Add to local files
-        stat = os.stat(dest_path)
-        from client import FileMetadata
-        metadata = FileMetadata(
-            name=fname,
-            size=stat.st_size,
-            modified=stat.st_mtime,
-            path=dest_path,
-            is_published=False
-        )
-        client.local_files[fname] = metadata
-        
-        # Auto publish if requested
-        if auto_publish:
-            def publish_task():
-                # Use interactive=False for API calls, overwrite=True to auto-replace
-                client.publish(dest_path, fname, overwrite=True, interactive=False)
-            threading.Thread(target=publish_task, daemon=True).start()
-            message = f'File "{fname}" uploaded and publishing...'
         else:
-            message = f'File "{fname}" uploaded successfully'
-        
-        return jsonify({
-            'success': True, 
-            'message': message,
-            'file': {
-                'name': fname,
-                'size': stat.st_size,
-                'path': dest_path
-            }
-        })
+            # Browser file upload - need to save somewhere first
+            # For browser uploads, save to repo as temporary storage
+            if 'file' not in request.files:
+                return jsonify({'success': False, 'error': 'No file provided. Use file_path parameter to track existing files.'}), 400
+            
+            file = request.files['file']
+            if file.filename == '':
+                return jsonify({'success': False, 'error': 'No file selected'}), 400
+            
+            # Get optional parameters
+            auto_publish = request.form.get('auto_publish', 'false').lower() == 'true'
+            force_upload = request.form.get('force_upload', 'false').lower() == 'true'
+            
+            # For browser uploads, we must save the file somewhere
+            # Save to repo directory as the "original" location for browser-uploaded files
+            fname = os.path.basename(file.filename)
+            dest_path = os.path.join(client.repo_dir, fname)
+            
+            # Check if file exists (unless force_upload is True)
+            if os.path.exists(dest_path) and not force_upload:
+                return jsonify({'success': False, 'error': f'File "{fname}" already exists'}), 400
+            
+            # Save the uploaded file
+            file.save(dest_path)
+            
+            # Get file metadata with cross-platform support
+            from client import get_file_metadata_crossplatform, FileMetadata
+            try:
+                meta_dict = get_file_metadata_crossplatform(dest_path)
+            except Exception as e:
+                print(f"[WARN] Failed to read metadata, using fallback: {e}")
+                stat = os.stat(dest_path)
+                meta_dict = {
+                    'size': stat.st_size,
+                    'modified': stat.st_mtime,
+                    'created': stat.st_mtime,
+                    'path': dest_path
+                }
+            
+            # Add to local files with added_at timestamp
+            metadata = FileMetadata(
+                name=fname,
+                size=meta_dict['size'],
+                modified=meta_dict['modified'],
+                created=meta_dict['created'],
+                path=dest_path,  # Saved in repo for browser uploads
+                is_published=False,
+                added_at=time.time()  # Track when added
+            )
+            client.local_files[fname] = metadata
+            
+            # Save metadata to JSON file
+            client._save_file_metadata(fname)
+            
+            # Auto publish if requested
+            if auto_publish:
+                def publish_task():
+                    client.publish(dest_path, fname, overwrite=True, interactive=False)
+                threading.Thread(target=publish_task, daemon=True).start()
+                message = f'File "{fname}" uploaded and publishing...'
+            else:
+                message = f'File "{fname}" uploaded successfully'
+            
+            return jsonify({
+                'success': True, 
+                'message': message,
+                'file': {
+                    'name': fname,
+                    'size': meta_dict['size'],
+                    'path': dest_path,
+                    'added_at': metadata.added_at
+                }
+            })
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/client/publish', methods=['POST'])
 def publish_file():
-    """Publish a file to the network"""
+    """Publish a file to the network (metadata only - no file copying)"""
     try:
         client = get_client()
         data = request.json
-        fname = data.get('fname')  # Changed to just fname since file should already be in repo
-        local_path = data.get('local_path')  # Optional, if provided will copy to repo
+        fname = data.get('fname')  # Filename to publish as
+        local_path = data.get('local_path')  # Path to actual file
         
         if not fname:
             return jsonify({'success': False, 'error': 'fname required'}), 400
         
-        # If local_path provided, use it; otherwise look in repo
+        # If local_path not provided, look in local_files
         if not local_path:
-            # File should already be in local_files
             if fname in client.local_files:
                 local_path = client.local_files[fname].path
             else:
-                # Try repo directory
-                local_path = os.path.join(client.repo_dir, fname)
-                if not os.path.exists(local_path):
-                    return jsonify({'success': False, 'error': 'File not found in repository'}), 404
+                return jsonify({'success': False, 'error': f'File "{fname}" not found. Please provide local_path'}), 404
         
-        # Run publish in a separate thread to avoid blocking
-        def publish_task():
-            # Use interactive=False for API calls, overwrite=True to auto-replace
-            success = client.publish(local_path, fname, overwrite=True, interactive=False)
-            if not success:
-                print(f"[API] Failed to publish {fname}")
+        # Validate file path exists
+        if not os.path.exists(local_path):
+            return jsonify({'success': False, 'error': f'File not found: {local_path}'}), 404
         
-        thread = threading.Thread(target=publish_task, daemon=True)
-        thread.start()
+        if not os.path.isfile(local_path):
+            return jsonify({'success': False, 'error': f'Path is not a file: {local_path}'}), 400
         
-        return jsonify({'success': True, 'message': 'Publishing file...'})
+        # Publish (stores metadata only, no copying)
+        # Returns (success: bool, error_msg: str or None)
+        success, error = client.publish(local_path, fname, overwrite=True, interactive=False)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': f'File "{fname}" published successfully',
+                'path': local_path
+            })
+        else:
+            return jsonify({'success': False, 'error': error or 'Failed to publish'}), 500
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/client/fetch', methods=['POST'])
@@ -491,13 +728,137 @@ def scan_directory():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/client/validate-file', methods=['POST'])
+def validate_file():
+    """Validate that a file path exists and is readable"""
+    try:
+        client = get_client()
+        data = request.json
+        fname = data.get('fname')
+        
+        if not fname:
+            return jsonify({'success': False, 'error': 'fname required'}), 400
+        
+        # Check if file is in published files
+        if fname not in client.published_files:
+            return jsonify({
+                'success': False,
+                'exists': False,
+                'error': 'File not in published files'
+            })
+        
+        file_metadata = client.published_files[fname]
+        is_valid, error_msg = file_metadata.validate_path()
+        
+        if is_valid:
+            return jsonify({
+                'success': True,
+                'exists': True,
+                'path': file_metadata.path,
+                'size': file_metadata.size,
+                'modified': file_metadata.modified
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'exists': False,
+                'error': error_msg,
+                'path': file_metadata.path
+            })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/client/logout', methods=['POST'])
+def logout():
+    """Logout and disconnect client from network"""
+    try:
+        # Extract username from token
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({
+                'success': False,
+                'error': 'Authentication required'
+            }), 401
+        
+        token = auth_header.split(' ')[1]
+        try:
+            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=['HS256'])
+            username = payload.get('username')
+            print(f"[LOGOUT] Received logout request from '{username}'")
+        except jwt.ExpiredSignatureError:
+            return jsonify({'success': False, 'error': 'Token expired'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'success': False, 'error': 'Invalid token'}), 401
+        
+        with clients_lock:
+            if username in client_instances:
+                client = client_instances[username]
+                print(f"[LOGOUT] Disconnecting client '{username}'")
+                
+                # Unregister from central server and close connection
+                try:
+                    client.close()
+                    print(f"[LOGOUT] Client '{username}' unregistered from server")
+                except Exception as e:
+                    print(f"[LOGOUT] Error closing client: {e}")
+                
+                # Remove from active instances
+                del client_instances[username]
+                print(f"[LOGOUT] Removed '{username}' from active instances")
+                
+                return jsonify({
+                    'success': True,
+                    'message': f'Successfully disconnected from network'
+                })
+            else:
+                print(f"[LOGOUT] Client '{username}' not found in active instances. Available: {list(client_instances.keys())}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Client not found'
+                }), 404
+    except Exception as e:
+        print(f"[ERROR] Logout failed: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/api/health', methods=['GET'])
 def health():
     """Health check"""
+    with clients_lock:
+        active_clients = len(client_instances)
+        usernames = list(client_instances.keys())
+    
     return jsonify({
         'status': 'healthy',
         'service': 'Client API',
-        'client_initialized': client_instance is not None
+        'active_clients': active_clients,
+        'usernames': usernames
+    })
+
+@app.route('/api/debug/clients', methods=['GET'])
+def debug_clients():
+    """Debug endpoint to see all active clients"""
+    with clients_lock:
+        client_info = {}
+        for username, client in client_instances.items():
+            try:
+                client_info[username] = {
+                    'hostname': client.hostname,
+                    'display_name': client.display_name,
+                    'port': client.listen_port,
+                    'repo': client.repo_dir,
+                    'running': client.running,
+                    'local_files_count': len(client.local_files),
+                    'published_files_count': len(client.published_files)
+                }
+            except Exception as e:
+                client_info[username] = {'error': str(e)}
+    
+    return jsonify({
+        'total_clients': len(client_instances),
+        'clients': client_info
     })
 
 if __name__ == '__main__':
@@ -507,5 +868,6 @@ if __name__ == '__main__':
     print("  POST /api/client/register - Register new user")
     print("  POST /api/client/login - Login existing user")
     print("  POST /api/client/init - Initialize client session")
+    print("  POST /api/client/logout - Logout and disconnect from network")
     print("  GET /api/health - Health check")
     app.run(host=CLIENT_API_HOST, port=CLIENT_API_PORT, debug=True, threaded=True)

@@ -1,6 +1,11 @@
 """
 Configuration Module for P2P File Sharing System
 Loads configuration from environment variables with fallback to defaults
+
+Network Configuration Notes:
+- SERVER_HOST: Use '0.0.0.0' to accept connections from any network interface (LAN/WAN)
+              Use '127.0.0.1' for localhost only (same machine)
+- For LAN access, set SERVER_HOST=0.0.0.0 and clients connect using the host's IP address
 """
 
 import os
@@ -12,13 +17,17 @@ env_path = Path(__file__).parent.parent / '.env'
 load_dotenv(dotenv_path=env_path)
 
 # Server Configuration
-SERVER_HOST = os.getenv('SERVER_HOST', '127.0.0.1')
+# Default to 0.0.0.0 for network-wide access, can override in .env
+SERVER_HOST = os.getenv('SERVER_HOST', '0.0.0.0')
 SERVER_PORT = int(os.getenv('SERVER_PORT', 9000))
 
 # Client Configuration
 CLIENT_PORT_MIN = int(os.getenv('CLIENT_PORT_MIN', 6000))
 CLIENT_PORT_MAX = int(os.getenv('CLIENT_PORT_MAX', 7000))
 CLIENT_REPO_BASE = os.getenv('CLIENT_REPO_BASE', './repos')
+CLIENT_HEARTBEAT_INTERVAL = int(os.getenv('CLIENT_HEARTBEAT_INTERVAL', 60))
+CLIENT_CLEANUP_INTERVAL = int(os.getenv('CLIENT_CLEANUP_INTERVAL', 30))
+CLIENT_INACTIVE_TIMEOUT = int(os.getenv('CLIENT_INACTIVE_TIMEOUT', 1200))
 
 # API Server Configuration
 ADMIN_API_HOST = os.getenv('ADMIN_API_HOST', '0.0.0.0')
@@ -51,7 +60,10 @@ def get_config():
         'client': {
             'port_min': CLIENT_PORT_MIN,
             'port_max': CLIENT_PORT_MAX,
-            'repo_base': CLIENT_REPO_BASE
+            'repo_base': CLIENT_REPO_BASE,
+            'heartbeat_interval': CLIENT_HEARTBEAT_INTERVAL,
+            'cleanup_interval': CLIENT_CLEANUP_INTERVAL,
+            'inactive_timeout': CLIENT_INACTIVE_TIMEOUT
         },
         'api': {
             'admin_host': ADMIN_API_HOST,

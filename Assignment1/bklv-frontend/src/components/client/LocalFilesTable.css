@@ -1,0 +1,58 @@
+/* LocalFilesTable Component Styles */
+
+.local-files-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.local-files-table th {
+  text-align: center;
+}
+
+.local-files-table .th-filename {
+  width: 30%;
+}
+
+.local-files-table .th-size {
+  width: 10%;
+}
+
+.local-files-table .th-created,
+.local-files-table .th-modified,
+.local-files-table .th-added,
+.local-files-table .th-status,
+.local-files-table .th-actions {
+  width: 12%;
+}
+
+.local-files-table .td-filename {
+  padding: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-files-table .td-size {
+  text-align: center;
+  white-space: nowrap;
+  min-width: 60px;
+}
+
+.local-files-table .td-timestamp {
+  text-align: center;
+  font-size: 0.9em;
+  padding: 4px;
+}
+
+.local-files-table .td-timestamp-time {
+  font-size: 0.85em;
+  color: #666;
+}
+
+.local-files-table .td-status {
+  text-align: center;
+}
+
+.local-files-table .td-actions {
+  text-align: center;
+}

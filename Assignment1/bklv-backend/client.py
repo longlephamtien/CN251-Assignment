@@ -7,35 +7,136 @@ import os
 import shlex
 import time
 import argparse
+import platform
 from datetime import datetime
 
+# Import adaptive heartbeat
 try:
-    from config import SERVER_HOST, SERVER_PORT
-    CENTRAL_HOST = SERVER_HOST
+    from optimizations.adaptive_heartbeat import AdaptiveHeartbeat, ClientState
+    ADAPTIVE_HEARTBEAT_AVAILABLE = True
+except ImportError:
+    print("[WARN] Adaptive heartbeat module not found, using fixed interval")
+    ADAPTIVE_HEARTBEAT_AVAILABLE = False
+
+try:
+    from config import (
+        SERVER_HOST, 
+        SERVER_PORT,
+        CLIENT_HEARTBEAT_INTERVAL
+    )
+    CENTRAL_HOST = SERVER_HOST if SERVER_HOST != '0.0.0.0' else '127.0.0.1'
     CENTRAL_PORT = SERVER_PORT
 except:
     CENTRAL_HOST = '127.0.0.1'
     CENTRAL_PORT = 9000
+    CLIENT_HEARTBEAT_INTERVAL = 60
+
+def get_file_metadata_crossplatform(file_path):
+    """
+    Get file metadata in a cross-platform way (Windows, macOS, Linux)
+    
+    Returns:
+        dict with: size, modified, created, path
+    """
+    try:
+        stat_info = os.stat(file_path)
+        
+        # Size in bytes
+        size = stat_info.st_size
+        
+        # Modified time (works on all platforms)
+        modified = stat_info.st_mtime
+        
+        # Created/birth time (platform-specific)
+        if platform.system() == 'Windows':
+            # Windows: st_ctime is creation time
+            created = stat_info.st_ctime
+        elif platform.system() == 'Darwin':  # macOS
+            # macOS: st_birthtime is creation time
+            created = stat_info.st_birthtime if hasattr(stat_info, 'st_birthtime') else stat_info.st_ctime
+        else:
+            # Linux: st_ctime is metadata change time, not creation time
+            # Use modified time as fallback
+            created = stat_info.st_mtime
+        
+        return {
+            'size': size,
+            'modified': modified,
+            'created': created,
+            'path': os.path.abspath(file_path)
+        }
+    except Exception as e:
+        raise Exception(f"Failed to get file metadata: {e}")
 
 class FileMetadata:
     """Tracks file metadata for local, published, and network files"""
-    def __init__(self, name, size, modified, path=None, is_published=False):
+    def __init__(self, name, size, modified, path=None, is_published=False, created=None, added_at=None, published_at=None):
         self.name = name
         self.size = size
-        self.modified = modified
-        self.path = path
+        self.modified = modified  # File's last modified time (from filesystem)
+        self.created = created or modified  # File's creation time (from filesystem)
+        self.path = path  # Absolute path to the actual file
         self.is_published = is_published
-        self.published_at = time.time() if is_published else None
+        self.added_at = added_at  # When file was added to local tracking
+        self.published_at = published_at  # When file was published to network
     
     def to_dict(self):
         return {
             'name': self.name,
             'size': self.size,
             'modified': self.modified,
+            'created': self.created,
             'path': self.path,
             'is_published': self.is_published,
+            'added_at': self.added_at,
             'published_at': self.published_at
         }
+    
+    def matches_metadata(self, other_size, other_modified, tolerance_seconds=2):
+        """
+        Check if file metadata matches (for duplicate detection without hashing)
+        
+        Args:
+            other_size: Size to compare
+            other_modified: Modified time to compare
+            tolerance_seconds: Tolerance for time comparison (default 2 seconds)
+        
+        Returns:
+            Tuple (exact_match, size_match, time_match)
+        """
+        size_match = self.size == other_size
+        time_match = abs(self.modified - other_modified) < tolerance_seconds
+        exact_match = size_match and time_match
+        
+        return exact_match, size_match, time_match
+    
+    def file_exists(self):
+        """Check if the file still exists at the stored path"""
+        if not self.path:
+            return False
+        return os.path.isfile(self.path)
+    
+    def validate_path(self):
+        """
+        Validate file path and check existence
+        Returns: (is_valid, error_message)
+        """
+        if not self.path:
+            return False, "No file path specified"
+        
+        # Check if path exists
+        if not os.path.exists(self.path):
+            return False, f"File not found: {self.path}"
+        
+        # Check if it's a file (not directory)
+        if not os.path.isfile(self.path):
+            return False, f"Path is not a file: {self.path}"
+        
+        # Check if readable
+        if not os.access(self.path, os.R_OK):
+            return False, f"File is not readable: {self.path}"
+        
+        return True, None
 
 def send_json(conn, obj):
     data = json.dumps(obj) + '\n'
@@ -53,10 +154,15 @@ def recv_json(conn):
             return json.loads(line.decode())
 
 class PeerServer(threading.Thread):
-    def __init__(self, listen_port, repo_dir):
+    def __init__(self, listen_port, client_ref):
+        """
+        Args:
+            listen_port: Port to listen on
+            client_ref: Reference to Client instance (to access published_files)
+        """
         super().__init__(daemon=True)
         self.listen_port = listen_port
-        self.repo_dir = repo_dir
+        self.client_ref = client_ref  # Reference to parent Client
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.bind(('', self.listen_port))
         self.sock.listen(5)
@@ -80,30 +186,53 @@ class PeerServer(threading.Thread):
             cmd = line.decode().strip().split(' ',1)
             if cmd[0] == 'GET' and len(cmd) == 2:
                 fname = cmd[1]
-                fpath = os.path.join(self.repo_dir, fname)
-                if os.path.isfile(fpath):
+                
+                # Look up file in published files to get actual path
+                if fname not in self.client_ref.published_files:
+                    conn.sendall(b"ERROR notfound\n")
+                    print(f"[PEER] File '{fname}' not found in published files")
+                    return
+                
+                file_metadata = self.client_ref.published_files[fname]
+                
+                # Validate file still exists at stored path
+                is_valid, error_msg = file_metadata.validate_path()
+                if not is_valid:
+                    conn.sendall(b"ERROR filenotfound\n")
+                    print(f"[PEER] File validation failed: {error_msg}")
+                    return
+                
+                fpath = file_metadata.path
+                
+                try:
                     size = os.path.getsize(fpath)
                     conn.sendall(f"LENGTH {size}\n".encode())
+                    print(f"[PEER] Sending file '{fname}' ({size} bytes) from: {fpath}")
                     with open(fpath, 'rb') as f:
                         while True:
                             chunk = f.read(8192)
                             if not chunk:
                                 break
                             conn.sendall(chunk)
-                else:
-                    conn.sendall(b"ERROR notfound\n")
-        except:
-            pass
+                except Exception as e:
+                    conn.sendall(b"ERROR readerror\n")
+                    print(f"[PEER] Error reading file '{fname}': {e}")
+        except Exception as e:
+            print(f"[PEER] Connection error: {e}")
         finally:
             conn.close()
 
 class Client:
-    def __init__(self, hostname, listen_port, repo_dir, display_name=None):
+    def __init__(self, hostname, listen_port, repo_dir, display_name=None, server_host=None, server_port=None):
         self.hostname = hostname
         self.display_name = display_name or hostname
         self.listen_port = listen_port
         self.repo_dir = repo_dir
         os.makedirs(self.repo_dir, exist_ok=True)
+        
+        # Server connection info (use provided or default)
+        self.server_host = server_host or CENTRAL_HOST
+        self.server_port = server_port or CENTRAL_PORT
         
         # Three-tier file management
         self.local_files = {}  # All files tracked by client (metadata only)
@@ -116,6 +245,14 @@ class Client:
         # Control flag for threads
         self.running = True
         
+        # Initialize adaptive heartbeat if available
+        if ADAPTIVE_HEARTBEAT_AVAILABLE:
+            self.adaptive_heartbeat = AdaptiveHeartbeat(ClientState.ACTIVE)
+            print("[INFO] Adaptive heartbeat enabled")
+        else:
+            self.adaptive_heartbeat = None
+            print("[INFO] Using fixed heartbeat interval")
+        
         # IMPORTANT: Scan repo directory FIRST to get current files
         self._scan_repo_directory()
         
@@ -123,9 +260,15 @@ class Client:
         self._load_state()
         
         # Then connect and register
+        print(f"[INFO] Connecting to server at {self.server_host}:{self.server_port}")
         self.central_lock = threading.Lock()
         self.central = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.central.connect((CENTRAL_HOST, CENTRAL_PORT))
+        try:
+            self.central.connect((self.server_host, self.server_port))
+            print(f"[SUCCESS] Connected to server at {self.server_host}:{self.server_port}")
+        except Exception as e:
+            print(f"[ERROR] Failed to connect to server at {self.server_host}:{self.server_port}")
+            raise RuntimeError(f"Cannot connect to server: {e}")
         
         # Prepare files metadata for server (with restored state)
         files_metadata = {}
@@ -149,11 +292,12 @@ class Client:
         })
         resp = recv_json(self.central)
         if not resp or resp.get('status') != 'OK':
-            print("Register failed", resp)
-            sys.exit(1)
+            error_msg = f"Register failed: {resp}"
+            print(f"[ERROR] {error_msg}")
+            raise RuntimeError(error_msg)
         
         self.pub_lock = threading.Lock()
-        self.peer_server = PeerServer(self.listen_port, self.repo_dir)
+        self.peer_server = PeerServer(self.listen_port, self)  # Pass client reference
         self.peer_server.start()
         threading.Thread(target=self.heartbeat_thread, daemon=True).start()
     
@@ -202,28 +346,62 @@ class Client:
             print(f"[WARN] Failed to save state file: {e}")
 
     def _scan_repo_directory(self):
-        """Scan repository directory and build local file metadata"""
+        """Scan repository directory and load file metadata from JSON files"""
         try:
             for fname in os.listdir(self.repo_dir):
                 # Skip hidden files and internal state files
                 if fname.startswith('.'):
                     continue
-                    
-                fpath = os.path.join(self.repo_dir, fname)
-                if os.path.isfile(fpath):
-                    stat = os.stat(fpath)
-                    self.local_files[fname] = FileMetadata(
-                        name=fname,
-                        size=stat.st_size,
-                        modified=stat.st_mtime,
-                        path=fpath,
-                        is_published=False
-                    )
-            print(f"[INFO] Scanned {len(self.local_files)} files from repository")
+                
+                # Look for metadata JSON files
+                if fname.endswith('.meta.json'):
+                    meta_path = os.path.join(self.repo_dir, fname)
+                    try:
+                        with open(meta_path, 'r') as f:
+                            meta_data = json.load(f)
+                        
+                        # Reconstruct FileMetadata from JSON
+                        file_meta = FileMetadata(
+                            name=meta_data['name'],
+                            size=meta_data['size'],
+                            modified=meta_data['modified'],
+                            created=meta_data.get('created', meta_data['modified']),
+                            path=meta_data['path'],
+                            is_published=meta_data.get('is_published', False),
+                            added_at=meta_data.get('added_at'),
+                            published_at=meta_data.get('published_at')
+                        )
+                        self.local_files[file_meta.name] = file_meta
+                        
+                        if file_meta.is_published:
+                            self.published_files[file_meta.name] = file_meta
+                            
+                    except Exception as e:
+                        print(f"[WARN] Failed to load metadata from {fname}: {e}")
+                        
+            print(f"[INFO] Loaded {len(self.local_files)} file metadata entries from repository")
         except Exception as e:
             print(f"[ERROR] Failed to scan repository: {e}")
     
-    def add_local_file(self, filepath):
+    def _save_file_metadata(self, fname):
+        """Save file metadata to JSON file in repo directory"""
+        try:
+            if fname not in self.local_files:
+                return False
+            
+            meta = self.local_files[fname]
+            meta_filename = f"{fname}.meta.json"
+            meta_path = os.path.join(self.repo_dir, meta_filename)
+            
+            with open(meta_path, 'w') as f:
+                json.dump(meta.to_dict(), f, indent=2)
+            
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to save metadata for {fname}: {e}")
+            return False
+    
+    def add_local_file(self, filepath, auto_save_metadata=True):
         """Add a file to local tracking (without copying or publishing)"""
         filepath = os.path.abspath(os.path.expanduser(filepath))
         if not os.path.isfile(filepath):
@@ -231,29 +409,63 @@ class Client:
             return False
         
         fname = os.path.basename(filepath)
-        stat = os.stat(filepath)
+        
+        # Get cross-platform metadata
+        try:
+            meta_dict = get_file_metadata_crossplatform(filepath)
+        except Exception as e:
+            print(f"[ERROR] Failed to read metadata: {e}")
+            return False
+        
         self.local_files[fname] = FileMetadata(
             name=fname,
-            size=stat.st_size,
-            modified=stat.st_mtime,
+            size=meta_dict['size'],
+            modified=meta_dict['modified'],
+            created=meta_dict['created'],
             path=filepath,
-            is_published=False
+            is_published=False,
+            added_at=time.time()  # Track when added to local files
         )
+        
+        # Save metadata to JSON
+        if auto_save_metadata:
+            self._save_file_metadata(fname)
+        
         print(f"[INFO] Added '{fname}' to local tracking")
         return True
     
     def heartbeat_thread(self):
+        """Send periodic heartbeat to central server with adaptive intervals"""
         while self.running:
             try:
-                time.sleep(60)
+                # Get interval (adaptive or fixed)
+                if self.adaptive_heartbeat:
+                    interval = self.adaptive_heartbeat.get_interval()
+                else:
+                    interval = CLIENT_HEARTBEAT_INTERVAL
+                
+                time.sleep(interval)
+                
                 if not self.running:
                     break
+                
                 with self.central_lock:
-                    send_json(self.central, {"action": "PING", "data": {"hostname": self.hostname}})
+                    ping_data = {"hostname": self.hostname}
+                    
+                    # Include state if using adaptive heartbeat
+                    if self.adaptive_heartbeat:
+                        ping_data["state"] = self.adaptive_heartbeat.state.value
+                    
+                    send_json(self.central, {"action": "PING", "data": ping_data})
                     recv_json(self.central)
+                    
+                    # Record heartbeat
+                    if self.adaptive_heartbeat:
+                        self.adaptive_heartbeat.record_heartbeat()
+                        
             except Exception as e:
                 if self.running:  # Only log if we're supposed to be running
-                    print("Heartbeat failed:", e)
+                    print(f"[HEARTBEAT] Failed: {e}")
                 break
 
     # def publish(self, local_path, fname):
@@ -278,89 +490,117 @@ class Client:
     #     else:
     #         print("Publish failed", r)
 
-    def publish(self, local_path, fname, overwrite=True, interactive=True):
-        """Publish a file from anywhere into the local repo and notify the central server.
+    def publish(self, local_path, fname=None, overwrite=True, interactive=True):
+        """
+        Publish a file by registering its metadata (NO COPYING - just track the file path).
+        The file stays in its original location.
         
         Args:
-            local_path: Path to the local file
-            fname: Name to give the file in the repository
-            overwrite: If True, automatically overwrite existing files (default: True)
-            interactive: If True, prompt user for confirmation (default: True, CLI mode)
+            local_path: Path to the file to publish
+            fname: Name to register (defaults to filename from path)
+            overwrite: If True, allow re-publishing with updated metadata
+            interactive: If True, prompt user for confirmation (CLI mode)
         """
         try:
+            # Mark activity for adaptive heartbeat
+            if self.adaptive_heartbeat:
+                self.adaptive_heartbeat.mark_activity("publish")
+            
             # Normalize path (expand ~ and make absolute)
             local_path = os.path.expanduser(local_path)
             local_path = os.path.abspath(local_path)
 
-            # Check if file exists
+            # Check if file exists and is valid
+            if not os.path.exists(local_path):
+                print(f"[ERROR] File not found: {local_path}")
+                return False, f"File not found: {local_path}"
+            
             if not os.path.isfile(local_path):
-                print(f"[ERROR] Local file not found: {local_path}")
-                return False
-
-            # Ensure repo directory exists
-            os.makedirs(self.repo_dir, exist_ok=True)
-            dest = os.path.join(self.repo_dir, fname)
-            dest = os.path.abspath(dest)  # Normalize destination path too
-
-            # Check if source and destination are the same file
-            same_file = False
-            if os.path.exists(dest):
-                try:
-                    same_file = os.path.samefile(local_path, dest)
-                except (OSError, ValueError):
-                    # Fallback to string comparison if samefile fails
-                    same_file = (local_path == dest)
+                print(f"[ERROR] Path is not a file: {local_path}")
+                return False, f"Path is not a file: {local_path}"
             
-            if same_file:
-                # File is already in the correct location, just update metadata and publish
-                print(f"[INFO] File '{fname}' already in repository, updating metadata...")
-            else:
-                # Check if file already exists (different file with same name)
-                if os.path.exists(dest):
-                    if interactive:
-                        # Interactive mode (CLI): Ask user
-                        try:
-                            print(f"[WARNING] A file named '{fname}' already exists in repo.")
-                            choice = input("Overwrite it? (y/n): ").strip().lower()
-                            if choice != 'y':
-                                print("[INFO] Publish cancelled.")
-                                return False
-                        except (EOFError, OSError):
-                            # No terminal available, use overwrite parameter
-                            if not overwrite:
-                                print(f"[ERROR] File '{fname}' already exists and overwrite=False")
-                                return False
-                            print(f"[INFO] No terminal available, auto-overwriting '{fname}'")
-                    else:
-                        # Non-interactive mode (API): Use overwrite parameter
-                        if not overwrite:
-                            print(f"[ERROR] File '{fname}' already exists and overwrite=False")
-                            return False
-                        print(f"[INFO] Overwriting existing file '{fname}'")
+            if not os.access(local_path, os.R_OK):
+                print(f"[ERROR] File is not readable: {local_path}")
+                return False, f"File is not readable: {local_path}"
 
-                # Copy file into repository
-                try:
-                    shutil.copy2(local_path, dest)
-                    print(f"[INFO] Copied '{local_path}' → '{dest}'")
-                except Exception as e:
-                    print(f"[ERROR] Failed to copy file: {e}")
-                    return False
+            # Get file metadata (cross-platform)
+            try:
+                metadata_dict = get_file_metadata_crossplatform(local_path)
+                file_size = metadata_dict['size']
+                file_modified = metadata_dict['modified']
+                file_created = metadata_dict['created']
+            except Exception as e:
+                print(f"[ERROR] Failed to read file metadata: {e}")
+                return False, f"Failed to read file metadata: {e}"
+
+            # Use filename from path if fname not provided
+            if fname is None:
+                fname = os.path.basename(local_path)
+
+            # Check for duplicates on network based on metadata
+            duplicate_info = self._check_duplicate_on_network(fname, file_size, file_modified)
             
-            # Get file metadata
-            stat = os.stat(dest)
-            file_size = stat.st_size
-            file_modified = stat.st_mtime
+            if duplicate_info['has_exact_duplicate']:
+                # Exact duplicate found (same name, size, and modified time)
+                hosts = duplicate_info['exact_matches']
+                print(f"\n[WARNING] File '{fname}' with exact same size and modified time already exists on network!")
+                print(f"   Size: {file_size} bytes")
+                print(f"   Modified: {datetime.fromtimestamp(file_modified).strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"   Available from: {', '.join(h['hostname'] for h in hosts)}")
+                
+                if interactive:
+                    print("\n[RECOMMENDATION] File appears to be identical. Consider fetching instead of publishing.")
+                    choice = input("Do you still want to publish? (y/n): ").strip().lower()
+                    if choice != 'y':
+                        print("[INFO] Publish cancelled.")
+                        return False, "Publish cancelled by user"
+                else:
+                    # In non-interactive mode, allow duplicates but warn
+                    print("[WARNING] Exact duplicate exists. Publishing anyway (reference-based).")
+            
+            elif duplicate_info['has_partial_duplicate']:
+                # Partial duplicate (same name, but different size or time)
+                print(f"\n[WARNING] File '{fname}' with different metadata already exists on network!")
+                print(f"   Your file - Size: {file_size} bytes, Modified: {datetime.fromtimestamp(file_modified).strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                for match in duplicate_info['partial_matches']:
+                    print(f"   {match['hostname']} - Size: {match['size']} bytes, Modified: {datetime.fromtimestamp(match['modified']).strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                if interactive:
+                    choice = input("Files have same name but different content. Continue? (y/n): ").strip().lower()
+                    if choice != 'y':
+                        print("[INFO] Publish cancelled.")
+                        return False, "Publish cancelled by user"
 
-            # Update local tracking
+            # Check if already published locally
+            if fname in self.published_files and not overwrite:
+                print(f"[ERROR] File '{fname}' is already published and overwrite=False")
+                return False, f"File '{fname}' is already published"
+
+            # Track when file was added (if not already tracked)
+            added_timestamp = time.time()
+            if fname in self.local_files:
+                # File already tracked, preserve added_at
+                added_timestamp = self.local_files[fname].added_at or time.time()
+
+            # Create metadata object (no file copying!)
             metadata = FileMetadata(
                 name=fname,
                 size=file_size,
                 modified=file_modified,
-                path=dest,
-                is_published=True
+                created=file_created,
+                path=local_path,  # Store original path
+                is_published=True,
+                added_at=added_timestamp,  # When added to local tracking
+                published_at=time.time()  # When published to network
             )
+            
+            # Update tracking
             self.local_files[fname] = metadata
             self.published_files[fname] = metadata
+            
+            # Save metadata to JSON file
+            self._save_file_metadata(fname)
 
             # Notify central server with metadata
             with self.central_lock:
@@ -370,23 +610,105 @@ class Client:
                         "hostname": self.hostname, 
                         "fname": fname,
                         "size": file_size,
-                        "modified": file_modified
+                        "modified": file_modified,
+                        "created": file_created,
+                        "published_at": metadata.published_at
                     }
                 })
                 r = recv_json(self.central)
 
             if r and r.get('status') == 'ACK':
-                print(f"[SUCCESS] Published '{fname}' to network ({file_size} bytes).")
-                # Save state to persist across reconnects
+                print(f"[SUCCESS] Published '{fname}' to network (reference to: {local_path})")
+                print(f"   Size: {file_size} bytes, Modified: {datetime.fromtimestamp(file_modified).strftime('%Y-%m-%d %H:%M:%S')}")
                 self._save_state()
-                return True
+                return True, None
             else:
                 print(f"[ERROR] Publish failed: {r}")
-                return False
+                return False, f"Server error: {r}"
 
         except Exception as e:
             print(f"[ERROR] Exception during publish: {e}")
-            return False
+            import traceback
+            traceback.print_exc()
+            return False, str(e)
+    
+    def _check_duplicate_on_network(self, fname, size, modified):
+        """
+        Check if file with same metadata exists on network
+        Uses metadata comparison (size + modified time) instead of hashing
+        
+        Returns:
+            {
+                'has_exact_duplicate': bool,
+                'has_partial_duplicate': bool,
+                'exact_matches': [...],
+                'partial_matches': [...]
+            }
+        """
+        try:
+            with self.central_lock:
+                send_json(self.central, {"action": "LIST"})
+                response = recv_json(self.central)
+            
+            if not response or response.get('status') != 'OK':
+                return {
+                    'has_exact_duplicate': False,
+                    'has_partial_duplicate': False,
+                    'exact_matches': [],
+                    'partial_matches': []
+                }
+            
+            registry = response.get('registry', {})
+            exact_matches = []
+            partial_matches = []
+            
+            for hostname, info in registry.items():
+                # Skip own files
+                if hostname == self.hostname:
+                    continue
+                
+                files = info.get('files', {})
+                if fname in files:
+                    finfo = files[fname]
+                    other_size = finfo.get('size', 0)
+                    other_modified = finfo.get('modified', 0)
+                    
+                    # Check if metadata matches
+                    exact_match, size_match, time_match = FileMetadata(
+                        fname, size, modified
+                    ).matches_metadata(other_size, other_modified)
+                    
+                    if exact_match:
+                        exact_matches.append({
+                            'hostname': hostname,
+                            'size': other_size,
+                            'modified': other_modified
+                        })
+                    elif size_match or time_match:
+                        # Partial match (different file)
+                        partial_matches.append({
+                            'hostname': hostname,
+                            'size': other_size,
+                            'modified': other_modified,
+                            'size_match': size_match,
+                            'time_match': time_match
+                        })
+            
+            return {
+                'has_exact_duplicate': len(exact_matches) > 0,
+                'has_partial_duplicate': len(partial_matches) > 0,
+                'exact_matches': exact_matches,
+                'partial_matches': partial_matches
+            }
+            
+        except Exception as e:
+            print(f"[WARN] Failed to check duplicates: {e}")
+            return {
+                'has_exact_duplicate': False,
+                'has_partial_duplicate': False,
+                'exact_matches': [],
+                'partial_matches': []
+            }
     
     def unpublish(self, fname):
         """Remove a file from the published list and notify the server"""
@@ -401,6 +723,9 @@ class Client:
             # Update local file metadata
             if fname in self.local_files:
                 self.local_files[fname].is_published = False
+                self.local_files[fname].published_at = None
+                # Save updated metadata
+                self._save_file_metadata(fname)
             
             # Notify central server
             with self.central_lock:
@@ -428,15 +753,57 @@ class Client:
 
     def request(self, fname, save_path=None):
         """
-        Request a file from the network
+        Request a file from the network with duplicate name warning
         
         Args:
             fname: Name of the file to download
             save_path: Optional custom save path. If None, saves to repo directory
         """
+        # Mark activity for adaptive heartbeat
+        if self.adaptive_heartbeat:
+            self.adaptive_heartbeat.mark_activity("fetch")
+        
+        # Check if file with same name already exists locally
+        if fname in self.local_files:
+            local_meta = self.local_files[fname]
+            print(f"\n[WARNING] File '{fname}' already exists in local repository!")
+            print(f"   Local file - Size: {local_meta.size} bytes, Modified: {datetime.fromtimestamp(local_meta.modified).strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Try to get info about the file to download
+            with self.central_lock:
+                send_json(self.central, {"action":"REQUEST","data":{"fname":fname}})
+                r = recv_json(self.central)
+            
+            if r and r.get('status') == 'FOUND':
+                hosts = r.get('hosts', [])
+                if hosts:
+                    remote_host = hosts[0]
+                    print(f"   Remote file - Size: {remote_host.get('size', 'unknown')} bytes")
+                    
+                    # Check if they're the same file
+                    if remote_host.get('size') == local_meta.size:
+                        remote_modified = remote_host.get('modified', 0)
+                        if abs(remote_modified - local_meta.modified) < 2:
+                            print(f"\n[INFO] Files appear identical (same size and time). Download may be unnecessary.")
+                        else:
+                            print(f"\n[WARNING] Files have same size but different modified times!")
+                    else:
+                        print(f"\n[WARNING] Files have different sizes - different content!")
+                    
+                    # Ask user if they want to continue
+                    try:
+                        choice = input("\nContinue with download? (y/n): ").strip().lower()
+                        if choice != 'y':
+                            print("[INFO] Download cancelled.")
+                            return None
+                    except (EOFError, OSError):
+                        # Non-interactive mode, continue anyway
+                        print("[INFO] Non-interactive mode, continuing download...")
+        
         with self.central_lock:
             send_json(self.central, {"action":"REQUEST","data":{"fname":fname}})
             r = recv_json(self.central)
+        
         if not r:
             print("No response from server")
             return None
@@ -447,6 +814,7 @@ class Client:
         if not hosts:
             print("No hosts returned")
             return None
+        
         picked = hosts[0]
         print("Attempting download from", picked['hostname'], picked['ip'], picked['port'])
         threading.Thread(target=self.download_from_peer, args=(picked['ip'], picked['port'], fname, save_path), daemon=True).start()
@@ -454,7 +822,7 @@ class Client:
 
     def download_from_peer(self, ip, port, fname, save_path=None):
         """
-        Download a file from a peer
+        Download a file from a peer with file transfer state tracking
         
         Args:
             ip: Peer IP address
@@ -462,6 +830,10 @@ class Client:
             fname: Filename to download
             save_path: Optional custom save path. If None, saves to repo directory
         """
+        # Mark as busy for large file transfers
+        if self.adaptive_heartbeat:
+            self.adaptive_heartbeat.start_file_transfer()
+        
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(10)
@@ -473,6 +845,8 @@ class Client:
                 if not chunk:
                     s.close()
                     print("[ERROR] Connection closed unexpectedly")
+                    if self.adaptive_heartbeat:
+                        self.adaptive_heartbeat.end_file_transfer()
                     return
                 buf += chunk
                 if b'\n' in buf:
@@ -503,27 +877,52 @@ class Client:
                         with open(outpath, 'wb') as f:
                             f.write(data[:length])
                         
+                        # Get file metadata with cross-platform support
+                        try:
+                            meta_dict = get_file_metadata_crossplatform(outpath)
+                        except Exception as e:
+                            print(f"[WARN] Failed to read metadata, using fallback: {e}")
+                            stat = os.stat(outpath)
+                            meta_dict = {
+                                'size': stat.st_size,
+                                'modified': stat.st_mtime,
+                                'created': stat.st_mtime,
+                                'path': outpath
+                            }
+                        
                         # Update metadata (only as local file, NOT auto-published)
-                        stat = os.stat(outpath)
                         metadata = FileMetadata(
                             name=fname,
-                            size=stat.st_size,
-                            modified=stat.st_mtime,
+                            size=meta_dict['size'],
+                            modified=meta_dict['modified'],
+                            created=meta_dict['created'],
                             path=outpath,
-                            is_published=False  # Downloaded files are NOT auto-published
+                            is_published=False,  # Downloaded files are NOT auto-published
+                            added_at=time.time()  # Downloaded = added to local tracking
                         )
                         self.local_files[fname] = metadata
                         
-                        print(f"[SUCCESS] Downloaded '{fname}' -> '{outpath}' ({stat.st_size} bytes)")
+                        # Save metadata to JSON
+                        self._save_file_metadata(fname)
+                        
+                        print(f"[SUCCESS] Downloaded '{fname}' -> '{outpath}' ({meta_dict['size']} bytes)")
                         print(f"[INFO] File saved as local only. Use 'publish' command to share with network.")
                         s.close()
+                        
+                        # End transfer state
+                        if self.adaptive_heartbeat:
+                            self.adaptive_heartbeat.end_file_transfer()
                         return
                     else:
                         print("[ERROR] Peer error:", line.decode().strip())
                         s.close()
+                        if self.adaptive_heartbeat:
+                            self.adaptive_heartbeat.end_file_transfer()
                         return
         except Exception as e:
             print(f"[ERROR] Download failed: {e}")
+            if self.adaptive_heartbeat:
+                self.adaptive_heartbeat.end_file_transfer()
 
     def discover(self, hostname):
         with self.central_lock:
@@ -693,10 +1092,13 @@ if __name__ == '__main__':
     parser.add_argument('--port', type=int, required=True, help='listening port for peer connections')
     parser.add_argument('--repo', default='repo', help='local repository folder')
     parser.add_argument('--name', help='display name for this client (default: hostname)')
+    parser.add_argument('--server-host', help=f'server IP address (default: {CENTRAL_HOST})')
+    parser.add_argument('--server-port', type=int, help=f'server port (default: {CENTRAL_PORT})')
     args = parser.parse_args()
-    c = Client(args.host, args.port, args.repo, args.name)
+    c = Client(args.host, args.port, args.repo, args.name, args.server_host, args.server_port)
     print(f"\n=== Client '{c.display_name}' started ===")
     print(f"Hostname: {c.hostname}")
     print(f"Repository: {c.repo_dir}")
     print(f"Listening on port: {c.listen_port}")
+    print(f"Connected to server: {c.server_host}:{c.server_port}")
     cli_loop(c)

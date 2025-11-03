@@ -1,0 +1,78 @@
+/* UploadFileModal Component Styles */
+
+.upload-file-modal .info-box {
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  background-color: #d1ecf1;
+  border: 1px solid #17a2b8;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.upload-file-modal .warning-box {
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background-color: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 4px;
+}
+
+.upload-file-modal .warning-title {
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+  color: #856404;
+}
+
+.upload-file-modal .warning-content {
+  font-size: 0.9rem;
+  color: #856404;
+}
+
+.upload-file-modal .warning-list {
+  margin-top: 0.5rem;
+  margin-bottom: 0;
+  padding-left: 1.5rem;
+}
+
+.upload-file-modal .warning-note {
+  margin-top: 0.5rem;
+  font-style: italic;
+}
+
+.upload-file-modal .error-box {
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background-color: #f8d7da;
+  border: 1px solid #dc3545;
+  border-radius: 4px;
+}
+
+.upload-file-modal .error-title {
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+  color: #721c24;
+}
+
+.upload-file-modal .error-content {
+  font-size: 0.9rem;
+  color: #721c24;
+}
+
+.upload-file-modal .error-recommendation {
+  margin-top: 0.5rem;
+  font-weight: bold;
+}
+
+.upload-file-modal .checkbox-label {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.upload-file-modal .checkbox-input {
+  margin-right: 0.5rem;
+}
+
+.upload-file-modal .submit-button {
+  width: 100%;
+}

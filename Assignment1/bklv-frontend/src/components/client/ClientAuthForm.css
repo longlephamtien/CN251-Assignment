@@ -1,0 +1,16 @@
+/* ClientAuthForm Component Styles */
+
+.client-auth-form .submit-button {
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+.client-auth-form .toggle-mode-container {
+  text-align: center;
+}
+
+.client-auth-form .toggle-mode-button {
+  background: none;
+  color: var(--primary-blue);
+  text-decoration: underline;
+}

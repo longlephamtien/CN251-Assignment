@@ -1,5 +1,6 @@
 import React from 'react';
 import { FormInput, Button } from '../common';
+import './ClientAuthForm.css';
 
 /**
  * ClientAuthForm Component - Login or Register form
@@ -13,7 +14,7 @@ function ClientAuthForm({
   onToggleMode 
 }) {
   return (
-    <form onSubmit={onSubmit}>
+    <form onSubmit={onSubmit} className="client-auth-form">
       <FormInput
         label="Username"
         type="text"
@@ -59,17 +60,16 @@ function ClientAuthForm({
         type="submit" 
         variant="primary" 
         disabled={loading} 
-        style={{width: '100%', marginBottom: '1rem'}}
+        className="submit-button"
       >
         {loading ? 'Please wait...' : (authMode === 'login' ? 'Login' : 'Register')}
       </Button>
       
-      <div style={{textAlign: 'center'}}>
+      <div className="toggle-mode-container">
         <button 
           type="button" 
-          className="btn btn-secondary" 
+          className="btn btn-secondary toggle-mode-button" 
           onClick={onToggleMode}
-          style={{background: 'none', color: 'var(--primary-blue)', textDecoration: 'underline'}}
         >
           {authMode === 'login' ? 'Need an account? Register' : 'Have an account? Login'}
         </button>

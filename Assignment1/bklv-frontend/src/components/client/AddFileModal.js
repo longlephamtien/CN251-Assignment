@@ -1,14 +1,16 @@
 import React from 'react';
 import { Button } from '../common';
-import './UploadFileModal.css';
+import './AddFileModal.css';
 
 /**
- * UploadFileModal Component - Track files by path (no upload)
+ * AddFileModal Component - Add files to tracking by selecting from file browser
  */
-function UploadFileModal({ 
-  uploadForm, 
-  setUploadForm, 
-  onSubmit, 
+function AddFileModal({ 
+  addForm, 
+  setAddForm, 
+  onSubmit,
+  onFileSelect,
+  onElectronFileSelect, 
   onClose,
   formatFileSize,
   duplicateInfo,
@@ -22,32 +24,85 @@ function UploadFileModal({
                       duplicateInfo?.has_partial_duplicate ||
                       localDuplicateInfo?.exists;
 
+  // Check if running in Electron
+  const isElectron = window.electronAPI?.isElectron || false;
+
+  // Handle Electron file dialog
+  const handleElectronFileSelect = async () => {
+    if (onElectronFileSelect) {
+      await onElectronFileSelect();
+    } else {
+      // Fallback if no handler provided
+      if (!window.electronAPI) {
+        console.error('Electron API not available');
+        return;
+      }
+
+      const result = await window.electronAPI.openFileDialog();
+      
+      if (!result.canceled) {
+        // Create a file-like object with the path information
+        const fileInfo = {
+          name: result.fileName,
+          size: result.fileSize,
+          type: result.fileType,
+          path: result.filePath,
+          modified: result.modified,
+          created: result.created
+        };
+        
+        setAddForm({ ...addForm, selectedFile: fileInfo });
+      }
+    }
+  };
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal upload-file-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal add-file-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3 className="modal-title">Add File to Tracking</h3>
           <button className="close-button" onClick={onClose}>×</button>
         </div>
         <form onSubmit={onSubmit}>
           <div className="form-group">
-            <label className="form-label">File Path</label>
-            <input
-              type="text"
-              className="form-input"
-              value={uploadForm.filePath || ''}
-              onChange={(e) => setUploadForm({...uploadForm, filePath: e.target.value})}
-              placeholder="/path/to/file.txt or ~/Documents/file.txt"
-              required
-            />
-            <small className="text-gray">
-              Enter the full path to a file on your computer. The file will NOT be copied.
-            </small>
-          </div>
-
-          <div className="info-box">
-            <strong>ℹ️ Note:</strong> The file will stay in its original location. 
-            Only metadata will be tracked by the system.
+            <label className="form-label">Select File</label>
+            {isElectron ? (
+              // Electron: Use native file dialog button
+              <>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={handleElectronFileSelect}
+                  className="browse-button"
+                >
+                  Browse Files
+                </Button>
+                {addForm.selectedFile && (
+                  <div className="file-info">
+                    <div><strong>Selected:</strong> {addForm.selectedFile.name}</div>
+                    <div><strong>Size:</strong> {formatFileSize(addForm.selectedFile.size)}</div>
+                    <div><strong>Path:</strong> {addForm.selectedFile.path}</div>
+                  </div>
+                )}
+              </>
+            ) : (
+              // Browser: Use standard file input
+              <>
+                <input
+                  type="file"
+                  className="form-input"
+                  onChange={onFileSelect}
+                  required
+                />
+                {addForm.selectedFile && (
+                  <small className="text-gray">
+                    Selected: {addForm.selectedFile.name} ({formatFileSize(addForm.selectedFile.size)})
+                    <br />
+                    Path will be read from your system
+                  </small>
+                )}
+              </>
+            )}
           </div>
 
           {/* Local Duplicate Warning */}
@@ -74,7 +129,7 @@ function UploadFileModal({
           {duplicateInfo?.has_exact_duplicate && (
             <div className="error-box">
               <div className="error-title">
-                🚫 Exact Duplicate on Network
+                Exact Duplicate on Network
               </div>
               <div className="error-content">
                 This file (same name, size, and modified time) already exists on the network:
@@ -87,7 +142,7 @@ function UploadFileModal({
                   ))}
                 </ul>
                 <div className="error-recommendation">
-                  💡 Recommendation: Download from network instead of uploading.
+                  Recommendation: Download from network instead of uploading.
                 </div>
               </div>
             </div>
@@ -120,18 +175,12 @@ function UploadFileModal({
             <label className="checkbox-label">
               <input
                 type="checkbox"
-                checked={uploadForm.autoPublish}
-                onChange={(e) => setUploadForm({...uploadForm, autoPublish: e.target.checked})}
+                checked={addForm.autoPublish}
+                onChange={(e) => setAddForm({...addForm, autoPublish: e.target.checked})}
                 className="checkbox-input"
               />
               <span>Publish to network immediately</span>
             </label>
-            <small className="text-gray">
-              {uploadForm.autoPublish ? 
-                'File will be shared with other users on the network' : 
-                'File will be kept private. You can publish it later.'
-              }
-            </small>
           </div>
           
           <Button 
@@ -139,7 +188,7 @@ function UploadFileModal({
             variant={hasWarnings ? "warning" : "primary"} 
             className="submit-button"
           >
-            {hasWarnings ? 'Add Anyway' : uploadForm.autoPublish ? 'Add & Publish' : 'Add File'}
+            {hasWarnings ? 'Add Anyway' : addForm.autoPublish ? 'Add & Publish' : 'Add File'}
           </Button>
         </form>
       </div>
@@ -147,4 +196,4 @@ function UploadFileModal({
   );
 }
 
-export default UploadFileModal;
+export default AddFileModal;

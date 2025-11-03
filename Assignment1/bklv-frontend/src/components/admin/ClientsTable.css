@@ -1,0 +1,27 @@
+/* ClientsTable Component Styles */
+
+.table-container th {
+  text-align: center;
+}
+
+.table-container td:nth-child(3), /* Address */
+.table-container td:nth-child(4), /* Files */
+.table-container td:nth-child(5), /* Status */
+.table-container td:nth-child(6), /* Last Seen */
+.table-container td:nth-child(7) { /* Actions */
+  text-align: center;
+}
+
+.clients-table-empty {
+  text-align: center;
+  padding: 2rem;
+  color: #999;
+}
+
+.clients-table-address-na {
+  color: #999;
+}
+
+.clients-table-action-btn {
+  margin-right: 0.5rem;
+}

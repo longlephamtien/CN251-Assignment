@@ -7,5 +7,5 @@ export { default as PublishedFilesTable } from './PublishedFilesTable';
 export { default as PublishedFilesGrid } from './PublishedFilesGrid';
 export { default as NetworkFilesTable } from './NetworkFilesTable';
 export { default as NetworkFilesGrid } from './NetworkFilesGrid';
-export { default as UploadFileModal } from './UploadFileModal';
+export { default as AddFileModal } from './AddFileModal';
 export { default as FetchFileModal } from './FetchFileModal';

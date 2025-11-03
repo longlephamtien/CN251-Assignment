@@ -78,7 +78,7 @@ echo ""
 # Start Frontend
 echo "🚀 Starting Frontend (port 3000)..."
 cd bklv-frontend
-npm start &
+npm run electron:dev &
 FRONTEND_PID=$!
 cd ..
 sleep 3

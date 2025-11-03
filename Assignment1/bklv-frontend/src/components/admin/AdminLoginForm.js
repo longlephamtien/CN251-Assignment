@@ -1,12 +1,13 @@
 import React from 'react';
 import { FormInput, Button } from '../common';
+import './AdminLoginForm.css';
 
 /**
  * AdminLoginForm Component
  */
 function AdminLoginForm({ loginForm, setLoginForm, onSubmit, loading, onBack }) {
   return (
-    <form onSubmit={onSubmit}>
+    <form onSubmit={onSubmit} className="admin-login-form">
       <FormInput
         label="Username"
         type="text"
@@ -23,11 +24,19 @@ function AdminLoginForm({ loginForm, setLoginForm, onSubmit, loading, onBack }) 
         required
       />
       
+      <FormInput
+        label="Server IP"
+        type="text"
+        value={loginForm.server_ip}
+        onChange={(e) => setLoginForm({...loginForm, server_ip: e.target.value})}
+        placeholder="localhost or IP address"
+      />
+      
       <Button 
         type="submit" 
         variant="primary" 
         disabled={loading} 
-        style={{width: '100%'}}
+        className="submit-button"
       >
         {loading ? 'Logging in...' : 'Login'}
       </Button>

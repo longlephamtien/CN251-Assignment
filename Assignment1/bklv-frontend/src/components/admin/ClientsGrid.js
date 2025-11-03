@@ -1,5 +1,6 @@
 import React from 'react';
 import { StatusBadge, Button } from '../common';
+import './ClientsGrid.css';
 
 /**
  * ClientsGrid Component - Display clients in grid format
@@ -8,12 +9,7 @@ function ClientsGrid({ clients, onPing, onDiscover, formatTimestamp }) {
   return (
     <div className="grid-container">
       {clients.length === 0 ? (
-        <div style={{ 
-          gridColumn: '1 / -1', 
-          textAlign: 'center', 
-          padding: '3rem', 
-          color: '#999' 
-        }}>
+        <div className="clients-grid-empty">
           No clients registered yet
         </div>
       ) : (
@@ -26,7 +22,7 @@ function ClientsGrid({ clients, onPing, onDiscover, formatTimestamp }) {
                 <strong>Address:</strong>{' '}
                 {client.status === 'online' 
                   ? `${client.ip}:${client.port}`
-                  : <span style={{ color: '#999' }}>N/A</span>
+                  : <span className="clients-grid-address-na">N/A</span>
                 }
               </div>
               <div><strong>Files:</strong> {client.file_count}</div>

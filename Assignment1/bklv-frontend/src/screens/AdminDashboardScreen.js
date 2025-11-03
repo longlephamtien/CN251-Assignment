@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import config, { API_CONFIG } from '../config';
+import config from '../config';
 import { DashboardLayout, DashboardHeader, ContentCard } from '../layouts';
 import { Modal, NotificationModal, ViewToggle, EmptyState, Button } from '../components/common';
 import { 
@@ -12,15 +12,15 @@ import {
 import { useNotification } from '../hooks/useNotification';
 import { formatTimestamp, formatFileSize } from '../utils/formatters';
 
-const API_BASE = API_CONFIG.adminBaseUrl + '/api';
-
 function AdminDashboardScreen({ onBack }) {
   // Authentication states
   const [authenticated, setAuthenticated] = useState(false);
   const [token, setToken] = useState(null);
+  const [apiBaseUrl, setApiBaseUrl] = useState('http://localhost:5500/api');
   const [loginForm, setLoginForm] = useState({
     username: '',
-    password: ''
+    password: '',
+    server_ip: 'localhost'
   });
 
   // Dashboard states
@@ -39,19 +39,33 @@ function AdminDashboardScreen({ onBack }) {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE}/admin/login`, {
+      // Construct API URL based on user's server input
+      const serverHost = loginForm.server_ip;
+      const adminApiPort = 5500; // Admin API port
+      const dynamicApiBase = `http://${serverHost}:${adminApiPort}/api`;
+      
+      console.log(`[Admin Auth] Connecting to: ${dynamicApiBase}`);
+      
+      const response = await fetch(`${dynamicApiBase}/admin/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(loginForm)
+        body: JSON.stringify({
+          username: loginForm.username,
+          password: loginForm.password
+        })
       });
 
       const data = await response.json();
 
       if (data.success) {
+        // Store the API base URL for future requests
+        setApiBaseUrl(dynamicApiBase);
+        console.log(`[Admin Auth] API base URL set to: ${dynamicApiBase}`);
+        
         setToken(data.token);
         setAuthenticated(true);
         showNotification('success', 'Login Successful', 'Welcome to Admin Dashboard');
-        fetchData();
+        fetchData(data.token, dynamicApiBase);
       } else {
         showNotification('error', 'Login Failed', data.error);
       }
@@ -63,9 +77,16 @@ function AdminDashboardScreen({ onBack }) {
   };
 
   // Fetch registry data
-  const fetchData = async () => {
+  const fetchData = async (authToken, dynamicApiBase) => {
+    const useToken = authToken || token;
+    const useApiBase = dynamicApiBase || apiBaseUrl;
+    
     try {
-      const response = await fetch(`${API_BASE}/admin/registry`);
+      const response = await fetch(`${useApiBase}/admin/registry`, {
+        headers: {
+          'Authorization': `Bearer ${useToken}`
+        }
+      });
       const data = await response.json();
       
       if (data.success) {
@@ -90,7 +111,11 @@ function AdminDashboardScreen({ onBack }) {
   // Handle ping
   const handlePing = async (hostname) => {
     try {
-      const response = await fetch(`${API_BASE}/admin/ping/${hostname}`);
+      const response = await fetch(`${apiBaseUrl}/admin/ping/${hostname}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       const data = await response.json();
       showNotification('info', 'Ping Result', `${hostname}: ${data.status}`);
     } catch (error) {
@@ -101,7 +126,11 @@ function AdminDashboardScreen({ onBack }) {
   // Handle discover
   const handleDiscover = async (hostname) => {
     try {
-      const response = await fetch(`${API_BASE}/admin/discover/${hostname}`);
+      const response = await fetch(`${apiBaseUrl}/admin/discover/${hostname}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       const data = await response.json();
       
       if (data.success) {

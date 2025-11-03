@@ -1,15 +1,15 @@
 /**
  * Frontend Configuration
- * Loads configuration from environment variables with fallback to defaults
+ * API URLs will be set dynamically based on user input
  */
 
 const config = {
   api: {
-    adminBaseUrl: process.env.REACT_APP_ADMIN_API_URL || 'http://localhost:5500',
-    clientBaseUrl: process.env.REACT_APP_CLIENT_API_URL || 'http://localhost:5501',
+    adminBaseUrl: 'http://localhost:5500',
+    clientBaseUrl: 'http://localhost:5501',
   },
   server: {
-    defaultHost: '127.0.0.1',
+    defaultHost: 'localhost',
     defaultPort: 9000,
   },
   client: {
@@ -17,8 +17,8 @@ const config = {
     portMax: 7000,
   },
   ui: {
-    refreshInterval: 5000, // milliseconds
-    notificationDuration: 3000, // milliseconds
+    refreshInterval: 5000,
+    notificationDuration: 3000,
   }
 };
 

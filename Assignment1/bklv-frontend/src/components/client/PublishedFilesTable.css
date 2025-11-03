@@ -1,0 +1,54 @@
+/* PublishedFilesTable Component Styles */
+
+.published-files-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.published-files-table th {
+  text-align: center;
+}
+
+.published-files-table .th-filename {
+  width: 30%;
+}
+
+.published-files-table .th-size {
+  width: 10%;
+}
+
+.published-files-table .th-created,
+.published-files-table .th-modified,
+.published-files-table .th-added,
+.published-files-table .th-published,
+.published-files-table .th-actions {
+  width: 12%;
+}
+
+.published-files-table .td-filename {
+  padding: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.published-files-table .td-size {
+  text-align: center;
+  white-space: nowrap;
+  min-width: 60px;
+}
+
+.published-files-table .td-timestamp {
+  text-align: center;
+  font-size: 0.9em;
+  padding: 4px;
+}
+
+.published-files-table .td-timestamp-time {
+  font-size: 0.85em;
+  color: #666;
+}
+
+.published-files-table .td-actions {
+  text-align: center;
+}

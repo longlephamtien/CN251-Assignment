@@ -1,0 +1,77 @@
+/* FetchFileModal Component Styles */
+
+.fetch-file-modal .error-box {
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background-color: #f8d7da;
+  border: 1px solid #dc3545;
+  border-radius: 4px;
+}
+
+.fetch-file-modal .error-title {
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+  color: #721c24;
+}
+
+.fetch-file-modal .error-content {
+  font-size: 0.9rem;
+  color: #721c24;
+}
+
+.fetch-file-modal .error-note {
+  margin-top: 0.5rem;
+  font-style: italic;
+}
+
+.fetch-file-modal .info-box {
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background-color: #d1ecf1;
+  border: 1px solid #17a2b8;
+  border-radius: 4px;
+}
+
+.fetch-file-modal .info-title {
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+  color: #0c5460;
+}
+
+.fetch-file-modal .info-content {
+  font-size: 0.9rem;
+  color: #0c5460;
+}
+
+.fetch-file-modal .warning-box {
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background-color: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 4px;
+}
+
+.fetch-file-modal .warning-title {
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+  color: #856404;
+}
+
+.fetch-file-modal .warning-content {
+  font-size: 0.9rem;
+  color: #856404;
+}
+
+.fetch-file-modal .file-details {
+  margin-top: 0.5rem;
+}
+
+.fetch-file-modal .file-details-list {
+  margin-top: 0.25rem;
+  margin-bottom: 0;
+  padding-left: 1.5rem;
+}
+
+.fetch-file-modal .submit-button {
+  width: 100%;
+}
