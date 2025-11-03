@@ -1,12 +1,13 @@
 import React from 'react';
 import { FormInput, Button } from '../common';
+import './AdminLoginForm.css';
 
 /**
  * AdminLoginForm Component
  */
 function AdminLoginForm({ loginForm, setLoginForm, onSubmit, loading, onBack }) {
   return (
-    <form onSubmit={onSubmit}>
+    <form onSubmit={onSubmit} className="admin-login-form">
       <FormInput
         label="Username"
         type="text"
@@ -35,7 +36,7 @@ function AdminLoginForm({ loginForm, setLoginForm, onSubmit, loading, onBack }) 
         type="submit" 
         variant="primary" 
         disabled={loading} 
-        style={{width: '100%'}}
+        className="submit-button"
       >
         {loading ? 'Logging in...' : 'Login'}
       </Button>

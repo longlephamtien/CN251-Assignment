@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { StatusBadge, Button } from '../common';
 import { truncateMiddle } from '../../utils/formatters';
+import './LocalFilesGrid.css';
 
 /**
  * LocalFilesGrid Component - Display local files in grid format
@@ -29,29 +30,13 @@ function LocalFilesGrid({ files, onPublish, onUnpublish, formatFileSize, formatT
   }, []);
 
   return (
-    <div className="grid-container" ref={gridRef} style={{ 
-      display: 'grid',
-      gridTemplateColumns: 'repeat(3, 1fr)',
-      gap: '16px',
-      padding: '8px'
-    }}>
+    <div className="local-files-grid" ref={gridRef}>
       {files.map((file) => (
-        <div key={file.name} className="grid-item" style={{
-          border: '1px solid #ddd',
-          borderRadius: '8px',
-          padding: '16px',
-          backgroundColor: '#fff'
-        }}>
-          <div className="grid-item-title" style={{
-            fontWeight: 'bold',
-            marginBottom: '12px',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
-          }} title={file.name}>
+        <div key={file.name} className="local-files-grid-item">
+          <div className="local-files-grid-title" title={file.name}>
             {truncateMiddle(file.name, maxFilenameLength)}
           </div>
-          <div className="grid-item-meta" style={{ fontSize: '0.85em', color: '#666', marginBottom: '12px' }}>
+          <div className="local-files-grid-meta">
             <div><strong>Size:</strong> {formatFileSize(file.size)}</div>
             <div><strong>Created:</strong> {formatTimestamp(file.created)}</div>
             <div><strong>Modified:</strong> {formatTimestamp(file.modified)}</div>
@@ -65,11 +50,7 @@ function LocalFilesGrid({ files, onPublish, onUnpublish, formatFileSize, formatT
               )}
             </div>
           </div>
-          <div className="grid-item-actions" style={{ 
-            display: 'flex',
-            justifyContent: 'center',
-            marginTop: '12px'
-          }}>
+          <div className="local-files-grid-actions">
             {!file.is_published ? (
               <Button
                 variant="primary"

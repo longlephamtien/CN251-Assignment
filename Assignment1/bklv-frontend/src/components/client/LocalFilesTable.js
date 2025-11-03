@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { StatusBadge, Button } from '../common';
 import { truncateMiddle, formatTimestampMultiLine } from '../../utils/formatters';
+import './LocalFilesTable.css';
 
 /**
  * LocalFilesTable Component - Display local files in table format
@@ -30,16 +31,16 @@ function LocalFilesTable({ files, onPublish, onUnpublish, formatFileSize, format
 
   return (
     <div className="table-container" ref={tableRef}>
-      <table style={{ width: '100%', tableLayout: 'fixed' }}>
+      <table className="local-files-table">
         <thead>
           <tr>
-            <th style={{ textAlign: 'center', width: '30%' }}>Filename</th>
-            <th style={{ textAlign: 'center', width: '10%' }}>Size</th>
-            <th style={{ textAlign: 'center', width: '12%' }}>Created</th>
-            <th style={{ textAlign: 'center', width: '12%' }}>Modified</th>
-            <th style={{ textAlign: 'center', width: '12%' }}>Added</th>
-            <th style={{ textAlign: 'center', width: '12%' }}>Status</th>
-            <th style={{ textAlign: 'center', width: '12%' }}>Actions</th>
+            <th className="th-filename">Filename</th>
+            <th className="th-size">Size</th>
+            <th className="th-created">Created</th>
+            <th className="th-modified">Modified</th>
+            <th className="th-added">Added</th>
+            <th className="th-status">Status</th>
+            <th className="th-actions">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -50,37 +51,32 @@ function LocalFilesTable({ files, onPublish, onUnpublish, formatFileSize, format
             
             return (
               <tr key={file.name}>
-                <td style={{ 
-                  padding: '8px',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap'
-                }} title={file.name}>
+                <td className="td-filename" title={file.name}>
                   {truncateMiddle(file.name, maxFilenameLength)}
                 </td>
-                <td style={{ textAlign: 'center', whiteSpace: 'nowrap', minWidth: '60px' }}>
+                <td className="td-size">
                   {formatFileSize(file.size)}
                 </td>
-                <td style={{ textAlign: 'center', fontSize: '0.9em', padding: '4px' }}>
+                <td className="td-timestamp">
                   <div>{createdTime.date}</div>
-                  <div style={{ fontSize: '0.85em', color: '#666' }}>{createdTime.time}</div>
+                  <div className="td-timestamp-time">{createdTime.time}</div>
                 </td>
-                <td style={{ textAlign: 'center', fontSize: '0.9em', padding: '4px' }}>
+                <td className="td-timestamp">
                   <div>{modifiedTime.date}</div>
-                  <div style={{ fontSize: '0.85em', color: '#666' }}>{modifiedTime.time}</div>
+                  <div className="td-timestamp-time">{modifiedTime.time}</div>
                 </td>
-                <td style={{ textAlign: 'center', fontSize: '0.9em', padding: '4px' }}>
+                <td className="td-timestamp">
                   <div>{addedTime.date}</div>
-                  <div style={{ fontSize: '0.85em', color: '#666' }}>{addedTime.time}</div>
+                  <div className="td-timestamp-time">{addedTime.time}</div>
                 </td>
-                <td style={{ textAlign: 'center' }}>
+                <td className="td-status">
                   {file.is_published ? (
                     <StatusBadge status="online">Published</StatusBadge>
                   ) : (
                     <StatusBadge status="offline">Local Only</StatusBadge>
                   )}
                 </td>
-                <td style={{ textAlign: 'center' }}>
+                <td className="td-actions">
                   {!file.is_published ? (
                     <Button
                       variant="primary"

@@ -1,5 +1,6 @@
 import React from 'react';
 import { StatusBadge, Button } from '../common';
+import './ClientsTable.css';
 
 /**
  * ClientsTable Component - Display clients in table format
@@ -22,7 +23,7 @@ function ClientsTable({ clients, onPing, onDiscover, formatTimestamp }) {
         <tbody>
           {clients.length === 0 ? (
             <tr>
-              <td colSpan="7" style={{ textAlign: 'center', padding: '2rem', color: '#999' }}>
+              <td colSpan="7" className="clients-table-empty">
                 No clients registered yet
               </td>
             </tr>
@@ -34,7 +35,7 @@ function ClientsTable({ clients, onPing, onDiscover, formatTimestamp }) {
                 <td>
                   {client.status === 'online' 
                     ? `${client.ip}:${client.port}`
-                    : <span style={{ color: '#999' }}>N/A</span>
+                    : <span className="clients-table-address-na">N/A</span>
                   }
                 </td>
                 <td>{client.file_count}</td>
@@ -57,7 +58,7 @@ function ClientsTable({ clients, onPing, onDiscover, formatTimestamp }) {
                     size="sm"
                     onClick={() => onPing(client.hostname)}
                     disabled={client.status === 'offline'}
-                    style={{ marginRight: '0.5rem' }}
+                    className="clients-table-action-btn"
                   >
                     Ping
                   </Button>

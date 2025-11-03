@@ -1,5 +1,6 @@
 import React from 'react';
 import { Button } from '../common';
+import './UploadFileModal.css';
 
 /**
  * UploadFileModal Component - Track files by path (no upload)
@@ -23,7 +24,7 @@ function UploadFileModal({
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal upload-file-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3 className="modal-title">Add File to Tracking</h3>
           <button className="close-button" onClick={onClose}>×</button>
@@ -44,38 +45,25 @@ function UploadFileModal({
             </small>
           </div>
 
-          <div style={{
-            padding: '0.75rem',
-            marginBottom: '1rem',
-            backgroundColor: '#d1ecf1',
-            border: '1px solid #17a2b8',
-            borderRadius: '4px',
-            fontSize: '0.9rem'
-          }}>
+          <div className="info-box">
             <strong>ℹ️ Note:</strong> The file will stay in its original location. 
             Only metadata will be tracked by the system.
           </div>
 
           {/* Local Duplicate Warning */}
           {localDuplicateInfo?.exists && (
-            <div style={{
-              padding: '1rem',
-              marginBottom: '1rem',
-              backgroundColor: '#fff3cd',
-              border: '1px solid #ffc107',
-              borderRadius: '4px'
-            }}>
-              <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#856404' }}>
+            <div className="warning-box">
+              <div className="warning-title">
                 Local File Exists
               </div>
-              <div style={{ fontSize: '0.9rem', color: '#856404' }}>
+              <div className="warning-content">
                 A file with this name already exists in your repository:
-                <ul style={{ marginTop: '0.5rem', marginBottom: 0, paddingLeft: '1.5rem' }}>
+                <ul className="warning-list">
                   <li>Size: {formatFileSize(localDuplicateInfo.local_file.size)}</li>
                   <li>Modified: {formatTimestamp(localDuplicateInfo.local_file.modified)}</li>
                   <li>Status: {localDuplicateInfo.local_file.is_published ? 'Published' : 'Not published'}</li>
                 </ul>
-                <div style={{ marginTop: '0.5rem', fontStyle: 'italic' }}>
+                <div className="warning-note">
                   Uploading will overwrite the existing file.
                 </div>
               </div>
@@ -84,19 +72,13 @@ function UploadFileModal({
 
           {/* Network Exact Duplicate Warning */}
           {duplicateInfo?.has_exact_duplicate && (
-            <div style={{
-              padding: '1rem',
-              marginBottom: '1rem',
-              backgroundColor: '#f8d7da',
-              border: '1px solid #dc3545',
-              borderRadius: '4px'
-            }}>
-              <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#721c24' }}>
+            <div className="error-box">
+              <div className="error-title">
                 🚫 Exact Duplicate on Network
               </div>
-              <div style={{ fontSize: '0.9rem', color: '#721c24' }}>
+              <div className="error-content">
                 This file (same name, size, and modified time) already exists on the network:
-                <ul style={{ marginTop: '0.5rem', marginBottom: 0, paddingLeft: '1.5rem' }}>
+                <ul className="warning-list">
                   {duplicateInfo.exact_matches.map((match, idx) => (
                     <li key={idx}>
                       <strong>{match.hostname}</strong> - {formatFileSize(match.size)}, 
@@ -104,7 +86,7 @@ function UploadFileModal({
                     </li>
                   ))}
                 </ul>
-                <div style={{ marginTop: '0.5rem', fontWeight: 'bold' }}>
+                <div className="error-recommendation">
                   💡 Recommendation: Download from network instead of uploading.
                 </div>
               </div>
@@ -113,19 +95,13 @@ function UploadFileModal({
 
           {/* Network Partial Duplicate Warning */}
           {!duplicateInfo?.has_exact_duplicate && duplicateInfo?.has_partial_duplicate && (
-            <div style={{
-              padding: '1rem',
-              marginBottom: '1rem',
-              backgroundColor: '#fff3cd',
-              border: '1px solid #ffc107',
-              borderRadius: '4px'
-            }}>
-              <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#856404' }}>
+            <div className="warning-box">
+              <div className="warning-title">
                 Similar File on Network
               </div>
-              <div style={{ fontSize: '0.9rem', color: '#856404' }}>
+              <div className="warning-content">
                 A file with the same name but different metadata exists:
-                <ul style={{ marginTop: '0.5rem', marginBottom: 0, paddingLeft: '1.5rem' }}>
+                <ul className="warning-list">
                   {duplicateInfo.partial_matches.map((match, idx) => (
                     <li key={idx}>
                       <strong>{match.hostname}</strong> - {formatFileSize(match.size)}, 
@@ -133,7 +109,7 @@ function UploadFileModal({
                     </li>
                   ))}
                 </ul>
-                <div style={{ marginTop: '0.5rem' }}>
+                <div className="warning-note">
                   This appears to be a different version of the file.
                 </div>
               </div>
@@ -141,12 +117,12 @@ function UploadFileModal({
           )}
 
           <div className="form-group">
-            <label style={{display: 'flex', alignItems: 'center', cursor: 'pointer'}}>
+            <label className="checkbox-label">
               <input
                 type="checkbox"
                 checked={uploadForm.autoPublish}
                 onChange={(e) => setUploadForm({...uploadForm, autoPublish: e.target.checked})}
-                style={{marginRight: '0.5rem'}}
+                className="checkbox-input"
               />
               <span>Publish to network immediately</span>
             </label>
@@ -161,7 +137,7 @@ function UploadFileModal({
           <Button 
             type="submit" 
             variant={hasWarnings ? "warning" : "primary"} 
-            style={{width: '100%'}}
+            className="submit-button"
           >
             {hasWarnings ? 'Add Anyway' : uploadForm.autoPublish ? 'Add & Publish' : 'Add File'}
           </Button>

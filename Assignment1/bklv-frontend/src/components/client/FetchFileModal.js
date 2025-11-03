@@ -1,5 +1,6 @@
 import React from 'react';
 import { Button, FormInput } from '../common';
+import './FetchFileModal.css';
 
 /**
  * FetchFileModal Component with duplicate warning and source validation
@@ -27,7 +28,7 @@ function FetchFileModal({
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal fetch-file-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3 className="modal-title">Download File</h3>
           <button className="close-button" onClick={onClose}>×</button>
@@ -42,27 +43,19 @@ function FetchFileModal({
               disabled
             />
             <small className="text-gray">
-              {/* Size: {formatFileSize(file.size)} • 
-              Modified: {formatTimestamp(file.modified)} • */}
               Owner: {file.owner_name}
             </small>
           </div>
 
           {/* Source File Validation Warning */}
           {validationWarning && (
-            <div style={{
-              padding: '1rem',
-              marginBottom: '1rem',
-              backgroundColor: '#f8d7da',
-              border: '1px solid #dc3545',
-              borderRadius: '4px'
-            }}>
-              <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#721c24' }}>
+            <div className="error-box">
+              <div className="error-title">
                 Source File May Be Unavailable
               </div>
-              <div style={{ fontSize: '0.9rem', color: '#721c24' }}>
+              <div className="error-content">
                 {validationWarning}
-                <div style={{ marginTop: '0.5rem', fontStyle: 'italic' }}>
+                <div className="error-note">
                   Download may fail if the file has been moved or deleted at the source.
                 </div>
               </div>
@@ -71,48 +64,26 @@ function FetchFileModal({
 
           {/* Local Duplicate Warning */}
           {hasLocalDuplicate && (
-            <div style={{
-              padding: '1rem',
-              marginBottom: '1rem',
-              backgroundColor: filesAreSame ? '#d1ecf1' : '#fff3cd',
-              border: `1px solid ${filesAreSame ? '#17a2b8' : '#ffc107'}`,
-              borderRadius: '4px'
-            }}>
-              <div style={{ 
-                fontWeight: 'bold', 
-                marginBottom: '0.5rem', 
-                color: filesAreSame ? '#0c5460' : '#856404' 
-              }}>
+            <div className={filesAreSame ? "info-box" : "warning-box"}>
+              <div className={filesAreSame ? "info-title" : "warning-title"}>
                 {filesAreSame ? 'File Already Downloaded' : 'Local File Exists'}
               </div>
-              <div style={{ 
-                fontSize: '0.9rem', 
-                color: filesAreSame ? '#0c5460' : '#856404' 
-              }}>
+              <div className={filesAreSame ? "info-content" : "warning-content"}>
                 You already have this file in your repository:
-                <div style={{ marginTop: '0.5rem' }}>
+                <div className="file-details">
                   <strong>Local file:</strong>
-                  <ul style={{ marginTop: '0.25rem', marginBottom: 0, paddingLeft: '1.5rem' }}>
+                  <ul className="file-details-list">
                     <li>Size: {formatFileSize(localDuplicateInfo.local_file.size)}</li>
                     <li>Modified: {formatTimestamp(localDuplicateInfo.local_file.modified)}</li>
                   </ul>
                 </div>
-                <div style={{ marginTop: '0.5rem' }}>
+                <div className="file-details">
                   <strong>Network file:</strong>
-                  <ul style={{ marginTop: '0.25rem', marginBottom: 0, paddingLeft: '1.5rem' }}>
+                  <ul className="file-details-list">
                     <li>Size: {formatFileSize(file.size)}</li>
                     <li>Modified: {formatTimestamp(file.modified)}</li>
                   </ul>
                 </div>
-                {/* {filesAreSame ? (
-                  <div style={{ marginTop: '0.5rem', fontWeight: 'bold' }}>
-                    Files appear identical
-                  </div>
-                ) : (
-                  <div style={{ marginTop: '0.5rem', fontWeight: 'bold' }}>
-                    Files have different content. Downloading will overwrite your local file.
-                  </div>
-                )} */}
               </div>
             </div>
           )}
@@ -120,7 +91,7 @@ function FetchFileModal({
           <Button 
             type="submit" 
             variant={hasLocalDuplicate && !filesAreSame ? "warning" : "primary"}
-            style={{width: '100%'}}
+            className="submit-button"
           >
             {filesAreSame  ? 
               'Download Anyway' : 

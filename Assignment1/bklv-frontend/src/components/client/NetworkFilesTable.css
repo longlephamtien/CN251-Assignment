@@ -1,0 +1,60 @@
+/* NetworkFilesTable Component Styles */
+
+.network-files-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.network-files-table th {
+  text-align: center;
+}
+
+.network-files-table .th-filename {
+  width: 30%;
+}
+
+.network-files-table .th-size {
+  width: 10%;
+}
+
+.network-files-table .th-created,
+.network-files-table .th-modified,
+.network-files-table .th-published,
+.network-files-table .th-owner,
+.network-files-table .th-actions {
+  width: 12%;
+}
+
+.network-files-table .td-filename {
+  padding: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.network-files-table .td-size {
+  text-align: center;
+  white-space: nowrap;
+  min-width: 60px;
+}
+
+.network-files-table .td-timestamp {
+  text-align: center;
+  font-size: 0.9em;
+  padding: 4px;
+}
+
+.network-files-table .td-timestamp-time {
+  font-size: 0.85em;
+  color: #666;
+}
+
+.network-files-table .td-owner {
+  text-align: center;
+  font-size: 0.85em;
+  padding: 4px;
+}
+
+.network-files-table .td-actions {
+  text-align: center;
+}

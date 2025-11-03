@@ -1,0 +1,12 @@
+/* ClientsGrid Component Styles */
+
+.clients-grid-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 3rem;
+  color: #999;
+}
+
+.clients-grid-address-na {
+  color: #999;
+}

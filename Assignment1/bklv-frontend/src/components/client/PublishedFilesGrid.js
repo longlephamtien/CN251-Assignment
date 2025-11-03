@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Button } from '../common';
 import { truncateMiddle } from '../../utils/formatters';
+import './PublishedFilesGrid.css';
 
 /**
  * PublishedFilesGrid Component
@@ -27,40 +28,20 @@ function PublishedFilesGrid({ files, onUnpublish, formatFileSize, formatTimestam
   }, []);
 
   return (
-    <div className="grid-container" ref={gridRef} style={{ 
-      display: 'grid',
-      gridTemplateColumns: 'repeat(3, 1fr)',
-      gap: '16px',
-      padding: '8px'
-    }}>
+    <div className="published-files-grid" ref={gridRef}>
       {files.map((file) => (
-        <div key={file.name} className="grid-item" style={{
-          border: '1px solid #ddd',
-          borderRadius: '8px',
-          padding: '16px',
-          backgroundColor: '#fff'
-        }}>
-          <div className="grid-item-title" style={{
-            fontWeight: 'bold',
-            marginBottom: '12px',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
-          }} title={file.name}>
+        <div key={file.name} className="published-files-grid-item">
+          <div className="published-files-grid-title" title={file.name}>
             {truncateMiddle(file.name, maxFilenameLength)}
           </div>
-          <div className="grid-item-meta" style={{ fontSize: '0.85em', color: '#666', marginBottom: '12px' }}>
+          <div className="published-files-grid-meta">
             <div><strong>Size:</strong> {formatFileSize(file.size)}</div>
             <div><strong>Created:</strong> {formatTimestamp(file.created)}</div>
             <div><strong>Modified:</strong> {formatTimestamp(file.modified)}</div>
             <div><strong>Added:</strong> {formatTimestamp(file.added_at)}</div>
             <div><strong>Published:</strong> {formatTimestamp(file.published_at)}</div>
           </div>
-          <div className="grid-item-actions" style={{ 
-            display: 'flex',
-            justifyContent: 'center',
-            marginTop: '12px'
-          }}>
+          <div className="published-files-grid-actions">
             <Button
               variant="secondary"
               size="sm"

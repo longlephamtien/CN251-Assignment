@@ -16,6 +16,7 @@ import {
 } from '../components/client';
 import { useNotification } from '../hooks/useNotification';
 import { formatTimestamp, formatFileSize } from '../utils/formatters';
+import './ClientInterfaceScreen.css';
 
 function ClientInterfaceScreen({ onBack }) {
   // Authentication states
@@ -691,7 +692,7 @@ function ClientInterfaceScreen({ onBack }) {
                 <Button
                   variant="primary"
                   onClick={() => setShowAddFileModal(true)}
-                  style={{ marginRight: '0.5rem' }}
+                  className="add-file-button"
                 >
                   + Add File
                 </Button>

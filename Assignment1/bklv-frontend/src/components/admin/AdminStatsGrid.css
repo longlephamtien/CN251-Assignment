@@ -1,0 +1,9 @@
+/* AdminStatsGrid Component Styles */
+
+.admin-stats-grid .stat-value.online {
+  color: #10b981;
+}
+
+.admin-stats-grid .stat-value.offline {
+  color: #6b7280;
+}
