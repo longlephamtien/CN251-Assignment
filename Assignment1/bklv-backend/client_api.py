@@ -2,6 +2,9 @@
 Client API Wrapper
 Provides a Flask API interface for a client instance
 This allows the web UI to control a local client
+
+Note: User authentication is FORWARDED to central server.
+Client API does NOT manage users locally - all user data is centralized on server.
 """
 
 from flask import Flask, request, jsonify, send_file
@@ -15,18 +18,16 @@ from datetime import datetime
 import time
 import jwt
 import uuid
+import requests
 
 # Import the Client class and config
 from client import Client, send_json, recv_json, CENTRAL_HOST, CENTRAL_PORT
 from config import CLIENT_API_HOST, CLIENT_API_PORT, JWT_SECRET_KEY, SESSION_TIMEOUT
-from user_db import UserDB, find_available_port
+from user_db import find_available_port  # Only need port management
 from optimizations.fetch_manager import fetch_manager
 
 app = Flask(__name__)
 CORS(app)
-
-# Initialize user database
-user_db = UserDB()
 
 # Session-based client instances - stores multiple clients by username
 client_instances = {}
@@ -66,81 +67,119 @@ def get_client(username=None):
 
 @app.route('/api/client/register', methods=['POST'])
 def register_user():
-    """Register a new user"""
+    """
+    Forward registration request to central server
+    Client API does NOT manage users - all user data is on server
+    """
     data = request.json
     username = data.get('username')
     password = data.get('password')
     display_name = data.get('display_name')
+    server_host = data.get('server_host', CENTRAL_HOST)
+    server_port = data.get('server_port', 5500)  # Server API port
     
     if not username or not password:
         return jsonify({'success': False, 'error': 'Username and password required'}), 400
     
-    success, message, user = user_db.register_user(username, password, display_name)
-    
-    if success:
-        # Generate JWT token
-        token = jwt.encode({
-            'username': username,
-            'exp': time.time() + SESSION_TIMEOUT
-        }, JWT_SECRET_KEY, algorithm='HS256')
+    try:
+        # Forward to server API
+        server_url = f'http://{server_host}:{server_port}/api/user/register'
+        print(f"[AUTH] Forwarding registration to server: {server_url}")
         
+        response = requests.post(server_url, json={
+            'username': username,
+            'password': password,
+            'display_name': display_name
+        }, timeout=10)
+        
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        print(f"[ERROR] Failed to forward registration: {e}")
         return jsonify({
-            'success': True,
-            'message': message,
-            'token': token,
-            'user': user
-        })
-    else:
-        return jsonify({'success': False, 'error': message}), 400
+            'success': False,
+            'error': f'Failed to connect to server: {str(e)}'
+        }), 500
 
 @app.route('/api/client/login', methods=['POST'])
 def login_user():
-    """Login an existing user"""
+    """
+    Forward login request to central server
+    Client API does NOT manage users - all user data is on server
+    """
     data = request.json
     username = data.get('username')
     password = data.get('password')
+    server_host = data.get('server_host', CENTRAL_HOST)
+    server_port = data.get('server_port', 5500)  # Server API port
     
     if not username or not password:
         return jsonify({'success': False, 'error': 'Username and password required'}), 400
     
-    success, message, user = user_db.authenticate_user(username, password)
-    
-    if success:
-        # Generate JWT token
-        token = jwt.encode({
-            'username': username,
-            'exp': time.time() + SESSION_TIMEOUT
-        }, JWT_SECRET_KEY, algorithm='HS256')
+    try:
+        # Forward to server API
+        server_url = f'http://{server_host}:{server_port}/api/user/login'
+        print(f"[AUTH] Forwarding login to server: {server_url}")
         
+        response = requests.post(server_url, json={
+            'username': username,
+            'password': password
+        }, timeout=10)
+        
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        print(f"[ERROR] Failed to forward login: {e}")
         return jsonify({
-            'success': True,
-            'message': message,
-            'token': token,
-            'user': user
-        })
-    else:
-        return jsonify({'success': False, 'error': message}), 401
+            'success': False,
+            'error': f'Failed to connect to server: {str(e)}'
+        }), 500
 
 @app.route('/api/client/init', methods=['POST'])
 def init_client():
-    """Initialize a new client session for authenticated user"""
-    
+    """
+    Initialize a new client session for authenticated user
+    User validation is done via JWT token from server
+    """
     data = request.json
     username = data.get('username')
     server_ip = data.get('server_ip', '127.0.0.1')
     server_port = data.get('server_port', 9000)
+    advertise_ip = data.get('advertise_ip')  # Optional: client can specify IP to advertise
     
     print(f"[INIT] Received init request for username: '{username}'")
+    print(f"[INIT] Server IP: {server_ip}, Advertise IP: {advertise_ip}")
     
     if not username:
         print("[INIT] ERROR: No username provided")
         return jsonify({'success': False, 'error': 'Username required'}), 400
     
-    # Get user data
-    user = user_db.get_user(username)
-    if not user:
-        print(f"[INIT] ERROR: User '{username}' not found in database")
-        return jsonify({'success': False, 'error': 'User not found'}), 404
+    # Verify user with server (via token)
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        print("[INIT] ERROR: No authorization token")
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
+    
+    try:
+        # Verify token with server
+        server_api_port = 5500  # Server API port
+        verify_url = f'http://{server_ip}:{server_api_port}/api/user/verify'
+        print(f"[INIT] Verifying token with server: {verify_url}")
+        
+        verify_response = requests.post(verify_url, headers={
+            'Authorization': auth_header
+        }, timeout=10)
+        
+        if not verify_response.ok:
+            print(f"[INIT] ERROR: Token verification failed")
+            return jsonify({'success': False, 'error': 'Invalid or expired token'}), 401
+        
+        user_data = verify_response.json()
+        user = user_data.get('user', {})
+        display_name = user.get('display_name', username)
+        
+        print(f"[INIT] User verified: {username} ({display_name})")
+    except Exception as e:
+        print(f"[INIT] ERROR: Failed to verify with server: {e}")
+        return jsonify({'success': False, 'error': f'Server verification failed: {str(e)}'}), 500
     
     try:
         # Auto-assign port if needed
@@ -151,10 +190,11 @@ def init_client():
         
         # Use username as hostname for consistency
         hostname = username
-        display_name = user.get('display_name', username)
-        repo = user.get('settings', {}).get('default_repo', f'repo_{username}')
+        repo = f'repo_{username}'
         
         print(f"[INIT] Creating client: hostname={hostname}, port={port}, repo={repo}, server={server_ip}:{server_port}")
+        if advertise_ip:
+            print(f"[INIT] Using advertised IP: {advertise_ip}")
         
         with clients_lock:
             # Close existing client for this user if it exists
@@ -167,17 +207,23 @@ def init_client():
             
             # Create new client instance for this user
             try:
-                # Pass server_ip and server_port to Client constructor
+                # Pass server_ip, server_port, and advertise_ip to Client constructor
                 client_instances[username] = Client(
                     hostname, 
                     port, 
                     repo, 
                     display_name,
                     server_host=server_ip,
-                    server_port=server_port
+                    server_port=server_port,
+                    advertise_ip=advertise_ip  # Pass advertise_ip
                 )
+                
+                # Get the actual IP being advertised
+                actual_ip = client_instances[username].advertise_ip
+                
                 print(f"[INIT] SUCCESS: Created client instance for '{username}' on port {port}")
                 print(f"[INIT] Connected to server at {server_ip}:{server_port}")
+                print(f"[INIT] Advertising IP: {actual_ip} for P2P connections")
                 print(f"[INIT] Active clients: {list(client_instances.keys())}")
             except Exception as client_error:
                 print(f"[INIT] ERROR: Failed to create Client instance: {client_error}")
@@ -194,7 +240,8 @@ def init_client():
                 'port': port,
                 'repo': repo,
                 'server_host': server_ip,
-                'server_port': server_port
+                'server_port': server_port,
+                'advertise_ip': actual_ip
             }
         })
     except Exception as e:

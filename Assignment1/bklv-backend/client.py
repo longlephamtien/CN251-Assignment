@@ -31,6 +31,57 @@ except:
     CENTRAL_PORT = 9000
     CLIENT_HEARTBEAT_INTERVAL = 60
 
+def get_local_ip(target_host='8.8.8.8', target_port=80):
+    """
+    Auto-detect the local IP address that would be used to connect to target_host.
+    This returns the IP that other clients should use to connect to this client.
+    
+    Args:
+        target_host: IP to connect to for detection (default: Google DNS)
+        target_port: Port to use for detection
+    
+    Returns:
+        str: Local IP address (e.g., '192.168.1.100')
+    """
+    try:
+        # Create a socket and connect to an external IP (doesn't actually send data)
+        # This tells us which network interface would be used
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.1)
+        
+        # If we have a server host, try to connect to it to get the right interface
+        try:
+            if target_host != '8.8.8.8':
+                s.connect((target_host, target_port))
+            else:
+                s.connect((target_host, target_port))
+        except:
+            # If connection fails, try Google DNS
+            s.connect(('8.8.8.8', 80))
+        
+        local_ip = s.getsockname()[0]
+        s.close()
+        
+        # Don't return localhost
+        if local_ip.startswith('127.'):
+            raise Exception("Got localhost IP, trying alternative method")
+        
+        return local_ip
+    except Exception as e:
+        # Fallback: try to get hostname IP
+        try:
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            
+            if not local_ip.startswith('127.'):
+                return local_ip
+        except:
+            pass
+        
+        # Last resort: return localhost (won't work for cross-machine P2P)
+        print(f"[WARN] Could not detect local IP, using 127.0.0.1 (P2P may not work across machines)")
+        return '127.0.0.1'
+
 def get_file_metadata_crossplatform(file_path):
     """
     Get file metadata in a cross-platform way (Windows, macOS, Linux)
@@ -228,6 +279,7 @@ class PeerServer(threading.Thread):
                     size = os.path.getsize(fpath)
                     conn.sendall(f"LENGTH {size}\n".encode())
                     print(f"[PEER] Sending file '{fname}' ({size:,} bytes) from: {fpath}")
+                    print(f"[PEER DEBUG] File exists: {os.path.exists(fpath)}, Is file: {os.path.isfile(fpath)}")
                     
                     # Use larger chunks for better performance with large files
                     # 1MB chunks for files > 100MB, otherwise 256KB
@@ -235,6 +287,7 @@ class PeerServer(threading.Thread):
                     
                     bytes_sent = 0
                     last_progress_report = 0
+                    chunks_read = 0
                     
                     with open(fpath, 'rb') as f:
                         while True:
@@ -245,6 +298,9 @@ class PeerServer(threading.Thread):
                                 return
                             
                             chunk = f.read(chunk_size)
+                            chunks_read += 1
+                            if chunks_read <= 3:  # Debug first 3 chunks
+                                print(f"[PEER DEBUG] Chunk {chunks_read}: read {len(chunk)} bytes")
                             if not chunk:
                                 break
                             conn.sendall(chunk)
@@ -272,7 +328,7 @@ class PeerServer(threading.Thread):
             conn.close()
 
 class Client:
-    def __init__(self, hostname, listen_port, repo_dir, display_name=None, server_host=None, server_port=None):
+    def __init__(self, hostname, listen_port, repo_dir, display_name=None, server_host=None, server_port=None, advertise_ip=None):
         self.hostname = hostname
         self.display_name = display_name or hostname
         self.listen_port = listen_port
@@ -282,6 +338,15 @@ class Client:
         # Server connection info (use provided or default)
         self.server_host = server_host or CENTRAL_HOST
         self.server_port = server_port or CENTRAL_PORT
+        
+        # Auto-detect IP to advertise to other clients (for P2P connections)
+        if advertise_ip:
+            self.advertise_ip = advertise_ip
+        else:
+            # Try to detect using server as target
+            self.advertise_ip = get_local_ip(self.server_host, self.server_port)
+        
+        print(f"[INFO] Client will advertise IP: {self.advertise_ip} for P2P connections")
         
         # Three-tier file management
         self.local_files = {}  # All files tracked by client (metadata only)
@@ -335,6 +400,7 @@ class Client:
             "data": {
                 "hostname": self.hostname, 
                 "port": self.listen_port,
+                "ip": self.advertise_ip,  # Send our IP explicitly
                 "display_name": self.display_name,
                 "files_metadata": files_metadata
             }
@@ -1266,11 +1332,22 @@ if __name__ == '__main__':
     parser.add_argument('--name', help='display name for this client (default: hostname)')
     parser.add_argument('--server-host', help=f'server IP address (default: {CENTRAL_HOST})')
     parser.add_argument('--server-port', type=int, help=f'server port (default: {CENTRAL_PORT})')
+    parser.add_argument('--advertise-ip', help='IP address to advertise for P2P connections (auto-detected if not specified)')
     args = parser.parse_args()
-    c = Client(args.host, args.port, args.repo, args.name, args.server_host, args.server_port)
+    
+    c = Client(
+        args.host, 
+        args.port, 
+        args.repo, 
+        args.name, 
+        args.server_host, 
+        args.server_port,
+        args.advertise_ip  # Pass advertise_ip argument
+    )
     print(f"\n=== Client '{c.display_name}' started ===")
     print(f"Hostname: {c.hostname}")
     print(f"Repository: {c.repo_dir}")
     print(f"Listening on port: {c.listen_port}")
+    print(f"Advertised IP: {c.advertise_ip}")
     print(f"Connected to server: {c.server_host}:{c.server_port}")
     cli_loop(c)

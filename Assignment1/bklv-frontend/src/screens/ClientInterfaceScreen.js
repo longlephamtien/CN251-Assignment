@@ -88,38 +88,40 @@ function ClientInterfaceScreen({ onBack }) {
     setLoading(true);
     
     try {
-      // Construct API URL based on user's server input
-      const serverHost = authForm.server_ip;
-      const clientApiPort = 5501;
-      const dynamicApiBase = `http://${serverHost}:${clientApiPort}/api/client`;
+      // CRITICAL: Always use localhost for client_api.py
+      // Frontend runs on client machine, so client_api.py MUST be local
+      const localClientApi = 'http://localhost:5501/api/client';
       
-      console.log(`[Auth] Connecting to: ${dynamicApiBase}`);
+      console.log(`[Auth] Using local client API: ${localClientApi}`);
+      console.log(`[Auth] Server IP from form: ${authForm.server_ip}`);
       
       const endpoint = authMode === 'login' ? '/login' : '/register';
-      const response = await fetch(`${dynamicApiBase}${endpoint}`, {
+      const response = await fetch(`${localClientApi}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: authForm.username,
           password: authForm.password,
-          display_name: authMode === 'register' ? authForm.display_name : undefined
+          display_name: authMode === 'register' ? authForm.display_name : undefined,
+          server_host: authForm.server_ip,  // Forward server IP to client_api
+          server_port: 5500  // Server API port (not central server port)
         })
       });
       
       const data = await response.json();
       
       if (data.success) {
-        // Store the API base URL for future requests
-        setApiBaseUrl(dynamicApiBase);
-        console.log(`[Auth] API base URL set to: ${dynamicApiBase}`);
+        // Always use localhost for client API
+        setApiBaseUrl(localClientApi);
+        console.log(`[Auth] Client API base URL set to: ${localClientApi}`);
         
         setToken(data.token);
         setCurrentUser(data.user);
         setAuthenticated(true);
         setShowAuthModal(false);
         showNotification('success', 'Success', `${authMode === 'login' ? 'Logged in' : 'Registered'} successfully!`);
-        // Pass token explicitly to avoid race condition
-        await initializeClient(data.user.username, data.token, dynamicApiBase);
+        // Pass token and local API base to initialize client
+        await initializeClient(data.user.username, data.token, localClientApi);
       } else {
         showNotification('error', 'Authentication Failed', data.error);
       }
@@ -135,7 +137,10 @@ function ClientInterfaceScreen({ onBack }) {
     try {
       const response = await fetch(`${dynamicApiBase}/init`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${userToken}`
+        },
         body: JSON.stringify({
           username: username,
           server_ip: authForm.server_ip,
