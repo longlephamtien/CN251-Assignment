@@ -1,5 +1,203 @@
 /* FetchFileModal Component Styles */
 
+/* ==========================
+   BROWSER-STYLE DOWNLOAD TRAY
+   ========================== */
+
+/* Download Tray Container */
+.download-tray {
+  padding: 0;
+}
+
+/* Download Item - Horizontal card like Chrome/Edge */
+.download-item {
+  position: relative;
+  display: flex;
+  align-items: center; /* Center align all items vertically */
+  gap: 20px; /* Increased spacing between icon and content */
+  padding: 16px;
+  background: #ffffff;
+  border: 3px solid #e5e7eb; /* Default gray border */
+  border-radius: 8px;
+  margin-bottom: 16px;
+  transition: all 0.3s ease;
+  overflow: visible;
+  min-height: 72px; /* Fixed height to prevent jumping */
+}
+
+/* Progress border overlay - BKLV gradient border that fills as download progresses */
+.download-item::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  bottom: -3px;
+  right: -3px;
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 1;
+  background: linear-gradient(
+    135deg,
+    var(--primary-blue) 0%,
+    var(--primary-dark) 100%
+  );
+  -webkit-mask: 
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: 
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  padding: 3px;
+  clip-path: polygon(
+    0 0,
+    calc(var(--progress-percent, 0%) + 3px) 0,
+    calc(var(--progress-percent, 0%) + 3px) 100%,
+    0 100%
+  );
+  transition: clip-path 0.3s ease;
+}
+
+/* When progress is 100%, show full border */
+.download-item[style*="100%"]::after {
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
+}
+
+.download-item:hover {
+  background: #f9fafb;
+}
+
+/* File Icon - Left side */
+.download-item-icon {
+  flex-shrink: 0;
+  width: 56px; /* Increased from 40px */
+  height: 56px; /* Increased from 40px */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+  border-radius: 8px; /* Increased from 6px */
+  border: 1px solid #bfdbfe;
+}
+
+.download-item-icon svg {
+  width: 32px; /* Increased from 24px */
+  height: 32px; /* Increased from 24px */
+  stroke: var(--primary-blue);
+  stroke-width: 2;
+}
+
+/* Content - Center */
+.download-item-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px; /* Consistent spacing between items */
+  justify-content: center; /* Center content vertically */
+}
+
+/* File Name */
+.download-item-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.4;
+  margin: 0; /* Remove default margin */
+}
+
+/* Source */
+.download-item-source {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.3;
+  margin: 0; /* Remove default margin */
+}
+
+/* Transfer Stats - Small, gray text below progress */
+.download-item-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.3;
+  min-height: 15px; /* Reserve exact space to prevent layout shift */
+  margin: 0; /* Remove default margin */
+}
+
+.stats-separator {
+  color: #d1d5db;
+  margin: 0 2px;
+}
+
+/* File Size - Shown on completed downloads */
+.download-item-size {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+/* Error Message - Shown on failed downloads */
+.download-item-error-msg {
+  font-size: 12px;
+  color: #dc2626;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+/* Status Icon - Right side of tray */
+.download-item-status {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+}
+
+.download-item-status.success {
+  color: #10b981;
+}
+
+.download-item-status.error {
+  color: #ef4444;
+}
+
+.status-icon {
+  width: 28px;
+  height: 28px;
+}
+
+/* Separator - Thin line before footer */
+.download-tray-separator {
+  height: 1px;
+  background: #e5e7eb;
+  margin: 8px 0 16px 0;
+}
+
+/* Footer - Close button area */
+.download-tray-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+.download-close-button {
+  min-width: 100px;
+  max-width: 150px;
+  padding: 8px 20px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ==========================
+   FORM ELEMENTS
+   ========================== */
+
 .fetch-file-modal .error-box {
   padding: 1rem;
   margin-bottom: 1rem;
@@ -75,3 +273,34 @@
 .fetch-file-modal .submit-button {
   width: 100%;
 }
+
+/* ==========================
+   RESPONSIVE DESIGN
+   ========================== */
+
+@media (max-width: 640px) {
+  .download-item {
+    padding: 12px;
+    gap: 10px;
+  }
+  
+  .download-item-icon {
+    width: 36px;
+    height: 36px;
+  }
+  
+  .download-item-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+  
+  .download-item-name {
+    font-size: 13px;
+  }
+  
+  .download-item-source,
+  .download-item-stats {
+    font-size: 11px;
+  }
+}
+

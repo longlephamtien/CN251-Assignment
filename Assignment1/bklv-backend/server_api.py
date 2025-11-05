@@ -62,7 +62,92 @@ def query_central_server(action, data=None):
     except Exception as e:
         return {"status": "ERROR", "reason": str(e)}
 
-# Admin Authentication
+# ===== USER MANAGEMENT (Centralized on Server) =====
+
+@app.route('/api/user/register', methods=['POST'])
+def user_register():
+    """Register a new user - centralized on server"""
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    display_name = data.get('display_name')
+    
+    if not username or not password:
+        return jsonify({'success': False, 'error': 'Username and password required'}), 400
+    
+    success, message, user = user_db.register_user(username, password, display_name)
+    
+    if success:
+        # Generate JWT token
+        token = jwt.encode({
+            'username': username,
+            'exp': time.time() + SESSION_TIMEOUT
+        }, JWT_SECRET_KEY, algorithm='HS256')
+        
+        return jsonify({
+            'success': True,
+            'message': message,
+            'token': token,
+            'user': user
+        })
+    else:
+        return jsonify({'success': False, 'error': message}), 400
+
+@app.route('/api/user/login', methods=['POST'])
+def user_login():
+    """Login an existing user - centralized on server"""
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not username or not password:
+        return jsonify({'success': False, 'error': 'Username and password required'}), 400
+    
+    success, message, user = user_db.authenticate_user(username, password)
+    
+    if success:
+        # Generate JWT token
+        token = jwt.encode({
+            'username': username,
+            'exp': time.time() + SESSION_TIMEOUT
+        }, JWT_SECRET_KEY, algorithm='HS256')
+        
+        return jsonify({
+            'success': True,
+            'message': message,
+            'token': token,
+            'user': user
+        })
+    else:
+        return jsonify({'success': False, 'error': message}), 401
+
+@app.route('/api/user/verify', methods=['POST'])
+def user_verify():
+    """Verify user token"""
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return jsonify({'success': False, 'error': 'No token provided'}), 401
+    
+    token = auth_header.split(' ')[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=['HS256'])
+        username = payload.get('username')
+        user = user_db.get_user(username)
+        
+        if user:
+            return jsonify({
+                'success': True,
+                'user': user
+            })
+        else:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+    except jwt.ExpiredSignatureError:
+        return jsonify({'success': False, 'error': 'Token expired'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+
+# ===== ADMIN AUTHENTICATION =====
+
 @app.route('/api/admin/login', methods=['POST'])
 def admin_login():
     """Admin login endpoint"""

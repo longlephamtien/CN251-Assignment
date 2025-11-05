@@ -76,44 +76,52 @@ function ClientInterfaceScreen({ onBack }) {
   const [fetchLocalDuplicateInfo, setFetchLocalDuplicateInfo] = useState(null);
   const [fetchValidationWarning, setFetchValidationWarning] = useState(null);
 
+  // Fetch progress tracking (integrated into modal)
+  const [currentFetchId, setCurrentFetchId] = useState(null);
+  const [fetchProgress, setFetchProgress] = useState(null);
+  const [isFetching, setIsFetching] = useState(false);
+  const [pollInterval, setPollInterval] = useState(null);
+
   // Handle authentication
   const handleAuth = async (e) => {
     e.preventDefault();
     setLoading(true);
     
     try {
-      // Construct API URL based on user's server input
-      const serverHost = authForm.server_ip;
-      const clientApiPort = 5501;
-      const dynamicApiBase = `http://${serverHost}:${clientApiPort}/api/client`;
+      // CRITICAL: Always use localhost for client_api.py
+      // Frontend runs on client machine, so client_api.py MUST be local
+      const localClientApi = 'http://localhost:5501/api/client';
       
-      console.log(`[Auth] Connecting to: ${dynamicApiBase}`);
+      console.log(`[Auth] Using local client API: ${localClientApi}`);
+      console.log(`[Auth] Server IP from form: ${authForm.server_ip}`);
       
       const endpoint = authMode === 'login' ? '/login' : '/register';
-      const response = await fetch(`${dynamicApiBase}${endpoint}`, {
+      const response = await fetch(`${localClientApi}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: authForm.username,
           password: authForm.password,
-          display_name: authMode === 'register' ? authForm.display_name : undefined
+          display_name: authMode === 'register' ? authForm.display_name : undefined,
+          server_host: authForm.server_ip,  // Forward server IP to client_api
+          server_port: 5500  // Server API port (not central server port)
         })
       });
       
       const data = await response.json();
       
       if (data.success) {
-        // Store the API base URL for future requests
-        setApiBaseUrl(dynamicApiBase);
-        console.log(`[Auth] API base URL set to: ${dynamicApiBase}`);
+        // Always use localhost for client API
+        setApiBaseUrl(localClientApi);
+        console.log(`[Auth] Client API base URL set to: ${localClientApi}`);
         
         setToken(data.token);
         setCurrentUser(data.user);
         setAuthenticated(true);
         setShowAuthModal(false);
         showNotification('success', 'Success', `${authMode === 'login' ? 'Logged in' : 'Registered'} successfully!`);
-        // Pass token explicitly to avoid race condition
-        await initializeClient(data.user.username, data.token, dynamicApiBase);
+        // Pass token and local API base to initialize client
+        await initializeClient(data.user.username, data.token, localClientApi);
       } else {
         showNotification('error', 'Authentication Failed', data.error);
       }
@@ -129,7 +137,10 @@ function ClientInterfaceScreen({ onBack }) {
     try {
       const response = await fetch(`${dynamicApiBase}/init`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${userToken}`
+        },
         body: JSON.stringify({
           username: username,
           server_ip: authForm.server_ip,
@@ -222,6 +233,15 @@ function ClientInterfaceScreen({ onBack }) {
       return () => clearInterval(interval);
     }
   }, [initialized]);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+      }
+    };
+  }, [pollInterval]);
 
   // Handle file selection
   // Check for local duplicates when fetching a file
@@ -545,8 +565,8 @@ function ClientInterfaceScreen({ onBack }) {
         }
       }
       
-      // Download to selected location
-      showNotification('info', 'Downloading', `Downloading ${selectedNetworkFile.name}...`);
+      // Start P2P fetch with progress tracking in modal
+      setIsFetching(true);
       
       const response = await fetch(`${apiBaseUrl}/fetch`, {
         method: 'POST',
@@ -563,31 +583,91 @@ function ClientInterfaceScreen({ onBack }) {
       const data = await response.json();
       
       if (data.success) {
-        showNotification('success', 'Download Complete', `Downloaded to ${downloadPath}`);
-        setShowFetchModal(false);
-        setTimeout(() => {
-          fetchLocalFiles();
-        }, 2000);
+        const fetchId = data.fetch_id;
+        setCurrentFetchId(fetchId);
+        
+        // Start polling for progress (updates modal)
+        pollFetchProgress(fetchId);
+        
       } else {
+        setIsFetching(false);
         // Enhanced error handling for file validation issues
-        const errorMsg = data.error || 'Download failed';
+        const errorMsg = data.error || 'Fetch failed';
         if (errorMsg.includes('not found') || errorMsg.includes('Not found')) {
           showNotification('error', 'File Not Found', 
-            `The file "${selectedNetworkFile.name}" is no longer available from ${selectedNetworkFile.owner_name}. The file may have been moved or deleted.`);
+            `The file "${selectedNetworkFile.name}" is no longer available from ${selectedNetworkFile.owner_name}.`);
         } else if (errorMsg.includes('not readable') || errorMsg.includes('permission')) {
           showNotification('error', 'Access Denied', 
-            `Cannot access "${selectedNetworkFile.name}" from the source. The file may have restricted permissions.`);
+            `Cannot access "${selectedNetworkFile.name}" from the source.`);
         } else if (errorMsg.includes('Connection') || errorMsg.includes('timeout')) {
           showNotification('error', 'Connection Failed', 
-            `Cannot connect to ${selectedNetworkFile.owner_name}. The peer may be offline or unreachable.`);
+            `Cannot connect to ${selectedNetworkFile.owner_name}. The peer may be offline.`);
         } else {
-          showNotification('error', 'Download Failed', errorMsg);
+          showNotification('error', 'Fetch Failed', errorMsg);
         }
       }
     } catch (error) {
       console.error('Fetch error:', error);
-      showNotification('error', 'Error', 'Failed to download file: ' + error.message);
+      setIsFetching(false);
+      showNotification('error', 'Error', 'Failed to fetch file: ' + error.message);
     }
+  };
+
+  // Poll fetch progress (integrated into modal)
+  const pollFetchProgress = (fetchId) => {
+    // Clear any existing interval
+    if (pollInterval) {
+      clearInterval(pollInterval);
+    }
+    
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch(`${apiBaseUrl}/fetch-progress/${fetchId}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          const progress = data.progress;
+          
+          // Debug: Log progress updates
+          console.log('[POLL] Progress update:', {
+            percent: progress.progress_percent,
+            downloaded: progress.downloaded_size,
+            total: progress.total_size,
+            speed: progress.speed_bps,
+            status: progress.status
+          });
+          
+          // Update progress in modal
+          setFetchProgress(progress);
+          
+          // Check if fetch is complete or failed
+          if (progress.status === 'completed') {
+            clearInterval(interval);
+            setPollInterval(null);
+            // Status shown in modal, no notification needed
+            
+            // Refresh local files in background
+            setTimeout(() => {
+              fetchLocalFiles();
+            }, 1000);
+            
+          } else if (progress.status === 'failed') {
+            clearInterval(interval);
+            setPollInterval(null);
+            // Error shown in modal, no notification needed
+          }
+        }
+      } catch (error) {
+        console.error('Progress polling error:', error);
+      }
+    }, 500); // Poll every 500ms for smooth progress updates
+    
+    setPollInterval(interval);
   };
 
   // Handle disconnect/logout
@@ -799,13 +879,28 @@ function ClientInterfaceScreen({ onBack }) {
           setFetchForm={setFetchForm}
           onSubmit={handleFetchConfirm}
           onClose={() => {
+            // Clear polling interval if still running
+            if (pollInterval) {
+              clearInterval(pollInterval);
+              setPollInterval(null);
+            }
+            // Reset all fetch-related state
             setShowFetchModal(false);
             setFetchLocalDuplicateInfo(null);
             setFetchValidationWarning(null);
+            setFetchProgress(null);
+            setCurrentFetchId(null);
+            setIsFetching(false);
+            // Refresh local files in case download completed
+            if (fetchProgress?.status === 'completed') {
+              fetchLocalFiles();
+            }
           }}
           formatFileSize={formatFileSize}
           localDuplicateInfo={fetchLocalDuplicateInfo}
           validationWarning={fetchValidationWarning}
+          fetchProgress={fetchProgress}
+          isFetching={isFetching}
         />
       )}
 

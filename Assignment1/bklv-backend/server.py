@@ -61,12 +61,17 @@ def handle_conn(conn, addr):
             if action == 'REGISTER':
                 hostname = data.get('hostname')
                 port = data.get('port')
+                client_ip = data.get('ip')  # Get IP from client (self-reported)
                 display_name = data.get('display_name', hostname)
                 files_metadata = data.get('files_metadata', {})  # New: get metadata from client
+                
                 if hostname and port:
+                    # Use client-provided IP if available, otherwise fallback to connection IP
+                    advertised_ip = client_ip if client_ip else addr[0]
+                    
                     with registry_lock:
                         registry[hostname] = {
-                            "addr": (addr[0], port),
+                            "addr": (advertised_ip, port),  # Use advertised IP for P2P
                             "display_name": display_name,
                             "files": {},
                             "last_seen": time.time(),
@@ -80,7 +85,8 @@ def handle_conn(conn, addr):
                                 "published_at": meta.get("published_at", None),
                                 "is_published": meta.get("is_published", False)
                             }
-                    print(f"[REGISTER] {hostname} ({display_name}) at {addr[0]}:{port} with {len(files_metadata)} files")
+                    
+                    print(f"[REGISTER] {hostname} ({display_name}) at {advertised_ip}:{port} (connected from {addr[0]}) with {len(files_metadata)} files")
                     send_json(conn, {"status": "OK"})
                 else:
                     send_json(conn, {"status": "ERROR", "reason": "bad register"})
