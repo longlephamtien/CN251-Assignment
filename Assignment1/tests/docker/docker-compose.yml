@@ -1,0 +1,177 @@
+services:
+  # Central Registry Server
+  server:
+    build:
+      context: ../..
+      dockerfile: tests/docker/Dockerfile
+    container_name: p2p-server
+    hostname: p2p-server
+    command: python bklv-backend/server.py
+    ports:
+      - "${SERVER_PORT:-9000}:${SERVER_PORT:-9000}"
+    networks:
+      - p2p-network
+    env_file:
+      - .env
+    environment:
+      - SERVER_HOST=${SERVER_HOST:-0.0.0.0}
+      - SERVER_PORT=${SERVER_PORT:-9000}
+      - CLIENT_CLEANUP_INTERVAL=${CLIENT_CLEANUP_INTERVAL:-30}
+      - CLIENT_INACTIVE_TIMEOUT=${CLIENT_INACTIVE_TIMEOUT:-1200}
+      - PYTHONUNBUFFERED=${PYTHONUNBUFFERED:-1}
+      - PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE:-1}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ../results:${RESULTS_DIR:-/app/tests/results}
+      - ../logs:${LOG_DIR:-/app/logs}
+      - ../../files:${FILES_DIR:-/app/files}
+    # Resource limits from .env
+    deploy:
+      resources:
+        limits:
+          cpus: '${SERVER_CPU_LIMIT:-4.0}'
+          memory: ${SERVER_MEMORY_LIMIT:-16G}
+        reservations:
+          cpus: '${SERVER_CPU_RESERVATION:-0.5}'
+          memory: ${SERVER_MEMORY_RESERVATION:-512M}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s = socket.socket(); s.connect(('localhost', ${SERVER_PORT:-9000})); s.close()"]
+      interval: ${HEALTHCHECK_INTERVAL:-10s}
+      timeout: ${HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${HEALTHCHECK_RETRIES:-5}
+      start_period: ${HEALTHCHECK_START_PERIOD:-10s}
+
+  # Admin API Server
+  admin-api:
+    build:
+      context: ../..
+      dockerfile: tests/docker/Dockerfile
+    container_name: p2p-admin-api
+    hostname: p2p-admin-api
+    command: python bklv-backend/server_api.py
+    ports:
+      - "${ADMIN_API_PORT:-5500}:${ADMIN_API_PORT:-5500}"
+    networks:
+      - p2p-network
+    env_file:
+      - .env
+    environment:
+      - SERVER_HOST=p2p-server
+      - SERVER_PORT=${SERVER_PORT:-9000}
+      - ADMIN_API_HOST=${ADMIN_API_HOST:-0.0.0.0}
+      - ADMIN_API_PORT=${ADMIN_API_PORT:-5500}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-test-secret-key}
+      - PYTHONUNBUFFERED=${PYTHONUNBUFFERED:-1}
+      - PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE:-1}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      server:
+        condition: service_healthy
+    volumes:
+      - ../results:${RESULTS_DIR:-/app/tests/results}
+    # Resource limits from .env
+    deploy:
+      resources:
+        limits:
+          cpus: '${ADMIN_CPU_LIMIT:-2.0}'
+          memory: ${ADMIN_MEMORY_LIMIT:-4G}
+        reservations:
+          cpus: '${ADMIN_CPU_RESERVATION:-0.25}'
+          memory: ${ADMIN_MEMORY_RESERVATION:-256M}
+
+  # Client API Server
+  client-api:
+    build:
+      context: ../..
+      dockerfile: tests/docker/Dockerfile
+    container_name: p2p-client-api
+    hostname: p2p-client-api
+    command: python bklv-backend/client_api.py
+    ports:
+      - "${CLIENT_API_PORT:-5501}:${CLIENT_API_PORT:-5501}"
+    networks:
+      - p2p-network
+    env_file:
+      - .env
+    environment:
+      - SERVER_HOST=p2p-server
+      - SERVER_PORT=${SERVER_PORT:-9000}
+      - CLIENT_API_HOST=${CLIENT_API_HOST:-0.0.0.0}
+      - CLIENT_API_PORT=${CLIENT_API_PORT:-5501}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-test-secret-key}
+      - PYTHONUNBUFFERED=${PYTHONUNBUFFERED:-1}
+      - PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE:-1}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      server:
+        condition: service_healthy
+    volumes:
+      - ../results:${RESULTS_DIR:-/app/tests/results}
+      - ../../files:${FILES_DIR:-/app/files}
+    # Resource limits from .env
+    deploy:
+      resources:
+        limits:
+          cpus: '${CLIENT_CPU_LIMIT:-2.0}'
+          memory: ${CLIENT_MEMORY_LIMIT:-4G}
+        reservations:
+          cpus: '${CLIENT_CPU_RESERVATION:-0.25}'
+          memory: ${CLIENT_MEMORY_RESERVATION:-256M}
+
+  # Test Runner Container
+  test-runner:
+    build:
+      context: ../..
+      dockerfile: tests/docker/Dockerfile
+    container_name: p2p-test-runner
+    hostname: p2p-test-runner
+    command: tail -f /dev/null  # Keep container running
+    networks:
+      - p2p-network
+    env_file:
+      - .env
+    environment:
+      - SERVER_HOST=p2p-server
+      - SERVER_PORT=${SERVER_PORT:-9000}
+      - PYTHONUNBUFFERED=${PYTHONUNBUFFERED:-1}
+      - PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE:-1}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TEST_TIMEOUT=${TEST_TIMEOUT:-3600}
+      - QUICK_TEST_CLIENTS=${QUICK_TEST_CLIENTS:-100}
+      - STANDARD_TEST_CLIENTS_1=${STANDARD_TEST_CLIENTS_1:-1000}
+      - STANDARD_TEST_CLIENTS_2=${STANDARD_TEST_CLIENTS_2:-10000}
+      - FULL_TEST_CLIENTS_1=${FULL_TEST_CLIENTS_1:-1000}
+      - FULL_TEST_CLIENTS_2=${FULL_TEST_CLIENTS_2:-10000}
+      - FULL_TEST_CLIENTS_3=${FULL_TEST_CLIENTS_3:-100000}
+      - P2P_TEST_CLIENTS=${P2P_TEST_CLIENTS:-25}
+    depends_on:
+      server:
+        condition: service_healthy
+    volumes:
+      - ../results:${RESULTS_DIR:-/app/tests/results}
+      - ../logs:${LOG_DIR:-/app/logs}
+      - ../../files:${FILES_DIR:-/app/files}
+      - ..:/app/tests
+    working_dir: /app/tests
+    # Resource limits from .env - Cấp nhiều tài nguyên hơn cho test runner
+    deploy:
+      resources:
+        limits:
+          cpus: '${TEST_CPU_LIMIT:-4.0}'
+          memory: ${TEST_MEMORY_LIMIT:-16G}
+        reservations:
+          cpus: '${TEST_CPU_RESERVATION:-1.0}'
+          memory: ${TEST_MEMORY_RESERVATION:-1G}
+
+networks:
+  p2p-network:
+    driver: ${DOCKER_NETWORK_DRIVER:-bridge}
+    ipam:
+      config:
+        - subnet: ${NETWORK_SUBNET:-172.25.0.0/16}
+
+volumes:
+  test-results:
+  test-files:
