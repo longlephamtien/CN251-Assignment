@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environment variables
+.env
+
+# Logs
+logs/*.log
+*.log
+
+# Test data (generated)
+data/*
+!data/.gitkeep
+
+# Repositories (generated during tests)
+repos/*
+!repos/.gitkeep
+
+# Test results (can be large)
+# Uncomment if you don't want to commit results
+# results/*
+# !results/.gitkeep
+
+# Docker
+.dockerignore
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.bak
+
+data/
+repos/
+logs/
+results/
