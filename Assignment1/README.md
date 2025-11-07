@@ -33,6 +33,151 @@ A peer-to-peer (P2P) file-sharing application built with Python (backend) and Re
 
 ---
 
+## How to Run
+
+### Prerequisites
+
+Before running the application, ensure you have the following installed:
+
+- **Python 3.12+**: [Download Python](https://www.python.org/downloads/)
+- **Node.js 14+**: [Download Node.js](https://nodejs.org/)
+- **npm** (comes with Node.js)
+
+**Verify installations**:
+```bash
+python3 --version  # Should output Python 3.8 or higher
+node --version     # Should output v14.0.0 or higher
+npm --version      # Should output 6.0.0 or higher
+```
+
+### Manual Setup
+
+If you prefer to run components separately or need more control:
+
+#### **Step 1: Install Dependencies**
+
+**Backend (Python)**:
+```bash
+cd Assignment1/bklv-backend
+
+# Create virtual environment (recommended)
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+**Frontend (Node.js)**:
+```bash
+cd Assignment1/bklv-frontend
+
+# Install dependencies
+npm install
+```
+
+#### **Step 2: Start Backend Services**
+
+Open **three separate terminals** and run:
+
+**Terminal 1 - Central Server**:
+```bash
+cd Assignment1/bklv-backend
+python3 server.py
+# Output: Central Server running on 0.0.0.0:9000
+```
+
+**Terminal 2 - Server API (Authentication)**:
+```bash
+cd Assignment1/bklv-backend
+python3 server_api.py
+# Output: Server API running on http://0.0.0.0:5500
+```
+
+**Terminal 3 - Client API**:
+```bash
+cd Assignment1/bklv-backend
+python3 client_api.py
+# Output: Client API running on http://0.0.0.0:5501
+```
+
+#### **Step 3: Start Frontend**
+
+In a **fourth terminal**:
+
+**Option A - Electron Desktop App (Recommended)**:
+```bash
+cd Assignment1/bklv-frontend
+npm run electron:dev
+# Opens Electron app with React UI
+```
+
+**Option B - Web Browser**:
+```bash
+cd Assignment1/bklv-frontend
+npm start
+# Opens http://localhost:3000 in your default browser
+```
+
+### Building Desktop Applications
+
+To create distributable desktop applications:
+
+#### **macOS**:
+```bash
+cd Assignment1/bklv-frontend
+npm run electron:build:mac
+```
+
+#### **Windows**:
+```bash
+cd Assignment1/bklv-frontend
+npm run electron:build:win
+```
+
+#### **Linux**:
+```bash
+cd Assignment1/bklv-frontend
+npm run electron:build:linux
+```
+
+### Accessing the Application
+
+Once all services are running:
+
+| Interface | URL | Purpose |
+|-----------|-----|---------|
+| **Client Interface** | http://localhost:3000 | Main user interface for file sharing |
+| **Admin Dashboard** | http://localhost:3000 | Admin interface (select "Admin Dashboard") |
+| **Server API** | http://localhost:5500 | REST API for authentication |
+| **Client API** | http://localhost:5501 | REST API for client operations |
+| **Central Server** | TCP port 9000 | P2P registry & coordination |
+
+### Default Credentials
+
+**Admin Login**:
+- Username: `admin`
+- Password: `admin123`
+
+**First-time Users**:
+- Click "Register" to create a new account
+- Choose username, password, and display name
+
+### Running Multiple Clients
+
+To test P2P file sharing, you can run multiple client instances:
+
+1. **Use different browsers**: Chrome, Firefox, Safari
+2. **Use incognito/private windows** in the same browser
+3. **Use different machines** on the same network
+
+Each client will:
+- Auto-assign a unique port (6000-7000 range)
+- Connect to the same central server
+- See files published by other clients
+
+---
+
 ## Application Functions
 
 ### 1. User Management

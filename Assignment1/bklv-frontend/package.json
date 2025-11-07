@@ -1,6 +1,6 @@
 {
   "name": "bklv-frontend",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "main": "public/electron.js",
   "homepage": "./",
@@ -19,6 +19,7 @@
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
     "electron": "^28.1.0",
     "electron-builder": "^24.9.1",
     "wait-on": "^7.2.0"
@@ -28,9 +29,13 @@
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-    "electron:dev": "concurrently \"BROWSER=none npm start\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron:dev": "concurrently \"cross-env BROWSER=none npm start\" \"wait-on http://localhost:3000 && electron .\"",
     "electron:build": "npm run build && electron-builder",
-    "electron:start": "electron ."
+    "electron:build:win": "npm run build && electron-builder --win",
+    "electron:build:mac": "npm run build && electron-builder --mac",
+    "electron:build:linux": "npm run build && electron-builder --linux",
+    "electron:start": "electron .",
+    "postinstall": "node scripts/install-backend-deps.js"
   },
   "eslintConfig": {
     "extends": [
@@ -52,12 +57,25 @@
   },
   "build": {
     "appId": "com.bklv.p2pfilesharing",
-    "productName": "BKLV P2P File Sharing",
+    "productName": "bklv-p2p-file-sharing",
     "files": [
       "build/**/*",
       "node_modules/**/*",
       "public/electron.js",
       "public/preload.js"
+    ],
+    "extraResources": [
+      {
+        "from": "../bklv-backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!**/__pycache__",
+          "!**/*.pyc",
+          "!**/repos/**",
+          "!**/.DS_Store"
+        ]
+      }
     ],
     "directories": {
       "buildResources": "public"
