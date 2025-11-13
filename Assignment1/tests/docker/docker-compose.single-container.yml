@@ -1,0 +1,141 @@
+###############################################################################
+# Docker Compose for Single-Container High-Density Testing
+# 
+# Strategy: 1 container, dynamic port range via ENV
+#   → Không thay đổi code client.py/server.py
+#   → Chỉ override CLIENT_PORT_MIN/MAX qua environment variables
+#   → Test 10k, 50k clients trong 1 container (nếu đủ ports)
+#
+# Use Cases:
+#   - Test với non-root ports (1024-65535)
+#   - Maximize single-machine capacity
+#   - Simpler setup than multi-container
+###############################################################################
+
+version: '3.8'
+
+services:
+  # Central Server
+  server:
+    build:
+      context: ../..
+      dockerfile: tests/docker/Dockerfile
+    container_name: p2p-server-single
+    hostname: p2p-server
+    command: python bklv-backend/server.py
+    ports:
+      - "9000:9000"
+    networks:
+      p2p-single-net:
+        ipv4_address: 172.31.0.10
+    environment:
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=9000
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ../results:/app/tests/results
+      - ../logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          cpus: '${SERVER_CPU_LIMIT:-4.0}'
+          memory: ${SERVER_MEMORY_LIMIT:-16G}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost',9000)); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Single High-Density Client Container
+  # Sử dụng dynamic port range qua ENV
+  client-all-in-one:
+    build:
+      context: ../..
+      dockerfile: tests/docker/Dockerfile.client
+    container_name: p2p-client-allinone
+    hostname: client-allinone
+    command: tail -f /dev/null
+    networks:
+      p2p-single-net:
+        ipv4_address: 172.31.0.20
+    environment:
+      - SERVER_HOST=p2p-server
+      - SERVER_PORT=9000
+      - PYTHONUNBUFFERED=1
+      
+      # DYNAMIC PORT RANGE - Override từ .env
+      # Mặc định: 1024-65535 (all non-root ports)
+      - CLIENT_PORT_MIN=${CLIENT_PORT_MIN:-1024}
+      - CLIENT_PORT_MAX=${CLIENT_PORT_MAX:-65535}
+      
+      # Target clients for this test
+      - TARGET_CLIENTS=${TARGET_CLIENTS:-10000}
+      
+    depends_on:
+      server:
+        condition: service_healthy
+    volumes:
+      - ../results:/app/tests/results
+      - ../logs:/app/logs
+      - ../../files:/app/files
+    deploy:
+      resources:
+        limits:
+          cpus: '${CLIENT_CPU_LIMIT:-12.0}'
+          memory: ${CLIENT_MEMORY_LIMIT:-32G}
+        reservations:
+          cpus: '${CLIENT_CPU_RESERVATION:-2.0}'
+          memory: ${CLIENT_MEMORY_RESERVATION:-4G}
+    # Ulimit for high file descriptor count
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  # Test Coordinator
+  test-coordinator:
+    build:
+      context: ../..
+      dockerfile: tests/docker/Dockerfile
+    container_name: p2p-test-coordinator-single
+    hostname: test-coordinator
+    command: tail -f /dev/null
+    networks:
+      p2p-single-net:
+        ipv4_address: 172.31.0.30
+    environment:
+      - SERVER_HOST=p2p-server
+      - SERVER_PORT=9000
+      - CLIENT_CONTAINER=client-allinone
+      - PYTHONUNBUFFERED=1
+      
+      # Test configuration
+      - CLIENT_PORT_MIN=${CLIENT_PORT_MIN:-1024}
+      - CLIENT_PORT_MAX=${CLIENT_PORT_MAX:-65535}
+      - TARGET_CLIENTS=${TARGET_CLIENTS:-10000}
+      
+    depends_on:
+      server:
+        condition: service_healthy
+      client-all-in-one:
+        condition: service_started
+    volumes:
+      - ../results:/app/tests/results
+      - ../logs:/app/logs
+      - ../../files:/app/files
+      - ..:/app/tests
+    working_dir: /app/tests
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+
+networks:
+  p2p-single-net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.31.0.0/16
+          gateway: 172.31.0.1
